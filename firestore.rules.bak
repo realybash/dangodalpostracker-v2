@@ -1,0 +1,272 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Catch-all safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- PRIMITIVE HELPERS ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- ROLE HELPERS ---
+    function isManager() {
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'Manager';
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() &&
+             exists(/databases/$(database)/documents/config/super_admin) &&
+             request.auth.uid == get(/databases/$(database)/documents/config/super_admin).data.uid;
+    }
+
+    function isEmployeeOf(ownerId) {
+      return isSignedIn() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.ownerId == ownerId;
+    }
+
+    function isOwnerOrEmployee(ownerId) {
+      return isSignedIn() && (
+        request.auth.uid == ownerId || 
+        isEmployeeOf(ownerId)
+      );
+    }
+
+    function hasActiveSubscriptionOrTrial(ownerId) {
+      return ownerId == 'mgr_1' || 
+             !exists(/databases/$(database)/documents/subscriptions/$(ownerId)) ||
+             get(/databases/$(database)/documents/subscriptions/$(ownerId)).data.status == 'Active' ||
+             get(/databases/$(database)/documents/subscriptions/$(ownerId)).data.status == 'Paid' ||
+             (
+               get(/databases/$(database)/documents/subscriptions/$(ownerId)).data.status == 'Trial' &&
+               request.time < timestamp(get(/databases/$(database)/documents/subscriptions/$(ownerId)).data.trialEndDate)
+             );
+    }
+
+    // --- VALIDATION BLUEPRINTS ---
+    
+    function isValidUser(data) {
+      return data.keys().hasAll(['role', 'activated']) &&
+             (data.keys().hasAny(['name', 'fullName'])) &&
+             (data.keys().hasAny(['phone', 'phoneNumber'])) &&
+             data.role in ['Manager', 'Employee'] &&
+             data.activated is bool;
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll(['amount', 'type', 'status', 'ownerId', 'cashierId', 'timestamp']) &&
+             data.amount is number &&
+             data.type in ['Withdrawal', 'Deposit', 'Transfer', 'Airtime', 'Bill Payment', 'Cash In', 'Cash Out', 'Cash Out (Transfer)', 'Data', 'Bills'] &&
+             data.status in ['Success', 'Pending', 'Failed'] &&
+             isValidId(data.ownerId) &&
+             isValidId(data.cashierId) &&
+             data.timestamp is timestamp;
+    }
+
+    function isValidExpense(data) {
+      return data.keys().hasAll(['amount', 'category', 'description', 'timestamp', 'ownerId', 'employeeId']) &&
+             data.amount is number &&
+             data.category is string &&
+             data.description is string &&
+             isValidId(data.ownerId) &&
+             isValidId(data.employeeId) &&
+             data.timestamp is timestamp;
+    }
+
+    function isValidPosTerminal(data) {
+      return data.keys().hasAll(['name', 'provider', 'ownerId', 'status', 'timestamp']) &&
+             data.name is string &&
+             data.provider is string &&
+             isValidId(data.ownerId) &&
+             data.status in ['Active', 'Inactive', 'Live'] &&
+             data.timestamp is timestamp;
+    }
+
+    function isValidBorrowKeep(data) {
+      return data.keys().hasAll(['type', 'amount', 'ownerId', 'timestamp']) &&
+             data.type in ['loan_given', 'loan_repaid', 'money_kept', 'money_returned', 'Borrow', 'Keep'] &&
+             data.amount is number &&
+             isValidId(data.ownerId) &&
+             data.timestamp is timestamp;
+    }
+
+    // --- COLLECTION RULES ---
+
+    // Users collection
+    match /users/{userId} {
+      // Public read is required by the app's offline-login architecture to allow phone-based lookups.
+      allow get: if isValidId(userId);
+      allow list: if true;
+      
+      allow create: if isSignedIn() && (request.auth.uid == userId || isManager()) && isValidUser(incoming());
+      allow update: if isSignedIn() && (request.auth.uid == userId || isManager());
+      allow delete: if isManager();
+    }
+
+    // Settings collection
+    match /settings/{ownerId} {
+      allow read: if isOwnerOrEmployee(ownerId) || isManager();
+      allow write: if isSignedIn() && request.auth.uid == ownerId && isManager();
+    }
+
+    // Borrow/Keep records
+    match /borrowKeep/{id} {
+      allow read: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid || 
+        isEmployeeOf(resource.data.ownerId) ||
+        isManager()
+      );
+      allow create: if isSignedIn() && isValidId(id) && (
+        incoming().ownerId == request.auth.uid ||
+        isEmployeeOf(incoming().ownerId) ||
+        isManager()
+      ) && isValidBorrowKeep(incoming()) && hasActiveSubscriptionOrTrial(incoming().ownerId);
+      allow update: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid || 
+        isEmployeeOf(resource.data.ownerId) ||
+        isManager()
+      ) && isValidBorrowKeep(incoming()) && hasActiveSubscriptionOrTrial(existing().ownerId);
+      allow delete: if isManager() && hasActiveSubscriptionOrTrial(resource.data.ownerId);
+    }
+    
+    // Transactions
+    match /transactions/{id} {
+      allow read: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid || 
+        resource.data.cashierId == request.auth.uid ||
+        isEmployeeOf(resource.data.ownerId) ||
+        isManager()
+      );
+      allow create: if isSignedIn() && isValidId(id) && (
+        incoming().cashierId == request.auth.uid ||
+        incoming().ownerId == request.auth.uid ||
+        isEmployeeOf(incoming().ownerId) ||
+        isManager()
+      ) && isValidTransaction(incoming()) && hasActiveSubscriptionOrTrial(incoming().ownerId);
+      
+      allow update: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid || 
+        resource.data.cashierId == request.auth.uid ||
+        isEmployeeOf(resource.data.ownerId) ||
+        isManager()
+      ) && hasActiveSubscriptionOrTrial(existing().ownerId);
+      
+      allow delete: if isManager() && hasActiveSubscriptionOrTrial(resource.data.ownerId);
+    }
+
+    // Expenses
+    match /expenses/{id} {
+      allow read: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid || 
+        resource.data.employeeId == request.auth.uid ||
+        isEmployeeOf(resource.data.ownerId) ||
+        isManager()
+      );
+      allow create: if isSignedIn() && isValidId(id) && (
+        incoming().ownerId == request.auth.uid ||
+        incoming().employeeId == request.auth.uid ||
+        isEmployeeOf(incoming().ownerId) ||
+        isManager()
+      ) && isValidExpense(incoming()) && hasActiveSubscriptionOrTrial(incoming().ownerId);
+      allow update: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid || 
+        resource.data.employeeId == request.auth.uid ||
+        isEmployeeOf(resource.data.ownerId) ||
+        isManager()
+      ) && hasActiveSubscriptionOrTrial(existing().ownerId);
+      allow delete: if isManager() && hasActiveSubscriptionOrTrial(resource.data.ownerId);
+    }
+
+    // POS Terminals
+    match /pos_terminals/{id} {
+      allow read: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid || 
+        resource.data.employeeId == request.auth.uid ||
+        isEmployeeOf(resource.data.ownerId) ||
+        isManager()
+      );
+      allow create: if isSignedIn() && (
+        incoming().ownerId == request.auth.uid ||
+        isEmployeeOf(incoming().ownerId) ||
+        isManager()
+      ) && isValidPosTerminal(incoming()) && hasActiveSubscriptionOrTrial(incoming().ownerId);
+      allow update: if isSignedIn() && (
+        resource.data.ownerId == request.auth.uid || 
+        resource.data.employeeId == request.auth.uid ||
+        isEmployeeOf(resource.data.ownerId) ||
+        isManager()
+      ) && hasActiveSubscriptionOrTrial(existing().ownerId);
+      allow delete: if isManager() && hasActiveSubscriptionOrTrial(resource.data.ownerId);
+    }
+    
+    // Pricing Rules
+    match /pricing_rules/{id} {
+      allow read: if isSignedIn();
+      allow write: if isManager();
+    }
+
+    // Config collection
+    match /config/{id} {
+      allow read: if isSignedIn();
+      allow write: if isManager();
+    }
+
+    // New Subscription & Referral System Collections
+    match /subscriptions/{id} {
+      allow read, write: if isSignedIn() && (request.auth.uid == id || isManager());
+    }
+    match /subscription_payments/{id} {
+      allow read, write: if isSignedIn();
+    }
+    match /payment_receipts/{id} {
+      allow read, write: if isSignedIn();
+    }
+    match /subscription_notifications/{id} {
+      allow read, write: if isSignedIn();
+    }
+    match /referrals/{id} {
+      allow read, write: if isSignedIn() && (id.startsWith(request.auth.uid) || isManager());
+    }
+    match /referral_commissions/{id} {
+      allow read, write: if isSignedIn();
+    }
+    match /payment_history/{id} {
+      allow read, write: if isSignedIn();
+    }
+    match /subscription_history/{id} {
+      allow read, write: if isSignedIn();
+    }
+    match /payouts/{id} {
+      allow read, write: if isSignedIn();
+    }
+    match /subscription_audit_logs/{id} {
+      allow read, write: if isManager();
+    }
+
+    match /test_connection/{id} {
+      allow read: if true;
+    }
+  }
+}
+

@@ -1,0 +1,1563 @@
+import React, { useState, useEffect } from 'react';
+import { getFriendlyErrorMessage } from '../lib/errorMapper';
+import { saveCachedUsersBatch, verifyOfflineUserCredentials } from '../lib/offlineDb';
+import { motion, AnimatePresence } from 'motion/react';
+import { User, UserRole } from '../types';
+import { collection, getDocs, query, where, doc, getDoc, updateDoc } from 'firebase/firestore';
+import { db, auth, handleFirestoreError, OperationType } from '../lib/firebase';
+import { signInWithEmailAndPassword } from 'firebase/auth';
+import { normalizePhone, normalizeName, cleanPhoneForCompare, isPhoneMatch, mapFirestoreUser, getAuthPassword, matchUserInList } from '../utils';
+import { 
+  Lock, 
+  UserCheck, 
+  ShieldAlert, 
+  ArrowRight, 
+  ShieldCheck, 
+  Smartphone, 
+  CheckCircle2, 
+  UserPlus, 
+  Phone, 
+  User as UserIcon, 
+  Sparkles, 
+  ChevronRight,
+  Eye,
+  EyeOff,
+  UserCircle,
+  Briefcase,
+  HelpCircle,
+  KeyRound,
+  MapPin
+} from 'lucide-react';
+import { WhatsAppSupportButton } from './WhatsAppSupportButton';
+
+interface LoginScreenProps {
+  registeredUsers: User[];
+  onLogin: (user: User) => void;
+  onRegister: (user: User) => Promise<void>;
+  onDeleteAllAccounts?: () => void;
+  isUsersLoaded: boolean;
+  initialAuthMode?: 'login' | 'register';
+}
+
+export function LoginScreen({ registeredUsers, onLogin, onRegister, onDeleteAllAccounts, isUsersLoaded, initialAuthMode }: LoginScreenProps) {
+  const [mode, setMode] = useState<'online' | 'offline'>(() => {
+    try {
+      return (localStorage.getItem('POSTrack_Mode') as 'online' | 'offline') || 'online';
+    } catch {
+      return 'online';
+    }
+  });
+  
+  const [authMode, setAuthMode] = useState<'login' | 'register'>(initialAuthMode || 'login');
+
+  // Automatically switch to registration mode if there are zero registered users in the database
+  useEffect(() => {
+    if (isUsersLoaded && registeredUsers.length === 0) {
+      setAuthMode('register');
+    }
+  }, [isUsersLoaded, registeredUsers.length]);
+
+  // Auto-detect referral link or code from URL query parameters, hash, or localStorage
+  useEffect(() => {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      let refParam = urlParams.get('ref') || urlParams.get('refCode') || urlParams.get('referral') || urlParams.get('referrer');
+      
+      if (!refParam && window.location.hash.includes('ref=')) {
+        const hashQuery = window.location.hash.split('?')[1];
+        if (hashQuery) {
+          const hashParams = new URLSearchParams(hashQuery);
+          refParam = hashParams.get('ref') || hashParams.get('refCode') || hashParams.get('referral');
+        }
+      }
+
+      let codeToUse = '';
+      if (refParam) {
+        codeToUse = refParam.trim().toUpperCase();
+        localStorage.setItem('OPay_Saved_Referral_Code', codeToUse);
+      } else {
+        const saved = localStorage.getItem('OPay_Saved_Referral_Code');
+        if (saved) codeToUse = saved.trim().toUpperCase();
+      }
+
+      if (codeToUse) {
+        setRegReferralCode(codeToUse);
+        setAuthMode('register');
+        if (codeToUse.startsWith('MGR-')) {
+          setRegRole('Manager');
+        }
+      }
+    } catch (e) {
+      console.warn('Could not parse referral parameters:', e);
+    }
+  }, []);
+
+  const [loginTab, setLoginTab] = useState<'staff' | 'manager'>(() => {
+    try {
+      const savedTab = localStorage.getItem('OPay_Last_Login_Tab');
+      return (savedTab === 'staff' || savedTab === 'manager') ? savedTab : 'staff';
+    } catch (e) {
+      return 'staff';
+    }
+  });
+  const [isRegistering, setIsRegistering] = useState(false);
+  
+  // Registration form states
+  const [regName, setRegName] = useState('');
+  const [regRole, setRegRole] = useState<UserRole>('Manager');
+  const [regPin, setRegPin] = useState('');
+  const [regPhone, setRegPhone] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regReferralCode, setRegReferralCode] = useState('');
+  const [regArea, setRegArea] = useState('');
+  const [showRegPin, setShowRegPin] = useState(false);
+  
+  // Login form states
+  const [loginPhone, setLoginPhone] = useState(() => {
+    try {
+      return localStorage.getItem('OPay_Last_Staff_Phone') || '';
+    } catch (e) {
+      return '';
+    }
+  });
+  const [managerPhone, setManagerPhone] = useState(() => {
+    try {
+      return localStorage.getItem('OPay_Last_Manager_Phone') || '';
+    } catch (e) {
+      return '';
+    }
+  });
+  const [pin, setPin] = useState(() => {
+    try {
+      const remember = localStorage.getItem('OPay_Remember_Me') !== 'false';
+      if (!remember) return '';
+      const savedTab = localStorage.getItem('OPay_Last_Login_Tab');
+      if (savedTab === 'staff') {
+        return localStorage.getItem('OPay_Last_Staff_Pin') || '';
+      } else if (savedTab === 'manager') {
+        return localStorage.getItem('OPay_Last_Manager_Pin') || '';
+      }
+      return '';
+    } catch (e) {
+      return '';
+    }
+  });
+  const [showPin, setShowPin] = useState(false);
+  const [showDemoHelp, setShowDemoHelp] = useState(false);
+  const [showForgotPasscode, setShowForgotPasscode] = useState(false);
+  const [rememberMe, setRememberMe] = useState(() => {
+    try {
+      return localStorage.getItem('OPay_Remember_Me') !== 'false';
+    } catch (e) {
+      return true;
+    }
+  });
+  
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  // Forgot PIN state
+  const [forgotStep, setForgotStep] = useState<'info' | 'verify' | 'new-pin' | 'success'>('info');
+  const [forgotPhone, setForgotPhone] = useState('');
+  const [forgotNewPin, setForgotNewPin] = useState('');
+  const [targetUser, setTargetUser] = useState<User | null>(null);
+  const [forgotError, setForgotError] = useState('');
+
+  const staffUsers = registeredUsers.filter(u => (u.role || '').toLowerCase() !== 'manager');
+  const managerUsers = registeredUsers.filter(u => (u.role || '').toLowerCase() === 'manager');
+  
+  console.log('LoginScreen registeredUsers:', registeredUsers);
+  console.log('LoginScreen managerUsers:', managerUsers);
+
+  const avatarBgColors = [
+    'bg-emerald-50 text-emerald-700 border-emerald-200',
+    'bg-blue-50 text-blue-700 border-blue-200',
+    'bg-purple-50 text-purple-700 border-purple-200',
+    'bg-amber-50 text-amber-700 border-amber-200',
+    'bg-rose-50 text-rose-700 border-rose-200'
+  ];
+
+  const getInitials = (name: string) => {
+    return name.trim().split(/\s+/).map(n => n[0]).join('').substring(0, 2).toUpperCase() || '👤';
+  };
+
+  const handleStaffLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmitting) return;
+    setError('');
+    setSuccess('');
+
+    if (!loginPhone.trim()) {
+      setError('Please enter your Registered Phone Number or Full Name.');
+      return;
+    }
+
+    if (!pin || pin.length !== 4) {
+      setError('Please enter your 4-digit PIN.');
+      return;
+    }
+
+    const inputRaw = loginPhone.trim();
+    const mode = localStorage.getItem('POSTrack_Mode') || 'online';
+    
+    setIsSubmitting(true);
+    console.log(`[Login] Staff login attempt in ${mode} mode for:`, inputRaw);
+
+    if (mode === 'offline') {
+      try {
+        const user = await verifyOfflineUserCredentials(inputRaw, pin, 'Employee');
+        
+        if (user) {
+          console.log('[Login] Offline login success for staff:', user.name);
+          onLogin(user);
+        } else {
+          setError('Invalid credentials for offline login. Please log in online at least once.');
+        }
+      } catch (err) {
+        console.error('[Login] Offline login error:', err);
+        setError('Offline login failed.');
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+
+    // ... (rest of the existing online login logic)
+    const inputPhoneDigits = cleanPhoneForCompare(inputRaw);
+    const inputNameNormalized = inputRaw.toLowerCase().replace(/\s+/g, '');
+    
+    console.log('[Login] Staff login attempt for:', inputRaw);
+
+    try {
+      // 1. Find the Employee document first using flexible matching
+      let user = matchUserInList(staffUsers, inputRaw) || matchUserInList(registeredUsers, inputRaw);
+
+      if (!user) {
+        console.log('[Login] Staff not found locally, checking Firestore users collection...');
+        try {
+          const usersRef = collection(db, 'users');
+          const inputPhone = cleanPhoneForCompare(inputRaw);
+          const q = inputPhone 
+            ? query(usersRef, where('phone', '==', inputPhone))
+            : query(usersRef, where('name', '==', inputRaw));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            const allCloudUsers = snap.docs.map(docSnap => mapFirestoreUser(docSnap.data(), docSnap.id));
+            user = matchUserInList(allCloudUsers, inputRaw);
+            if (user) {
+              console.log('[Login] Found staff user in Firestore (targeted search):', user.name);
+            }
+          }
+          if (!user) {
+            // Fallback: full users list search in Firestore to catch formatting variations
+            const allSnap = await getDocs(usersRef);
+            if (!allSnap.empty) {
+              const allCloudUsers = allSnap.docs.map(docSnap => mapFirestoreUser(docSnap.data(), docSnap.id));
+              user = matchUserInList(allCloudUsers, inputRaw);
+              if (user) {
+                console.log('[Login] Found staff user in Firestore (full scan fallback):', user.name);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[Login] Remote staff lookup failed:', err);
+        }
+      }
+
+      if (!user) {
+        setError('Staff account not found. Please verify the name or phone.');
+        setIsSubmitting(false);
+        return;
+      }
+
+      // 2. Attempt Firebase Auth sign-in
+      const userPhoneKey = cleanPhoneForCompare(user.phone || '');
+      const authEmail = `${userPhoneKey}@opay-pos.com`;
+      
+      console.log('[Login] Attempting Auth sign-in for staff:', user.name, 'Email:', authEmail);
+      
+      try {
+        await signInWithEmailAndPassword(auth, authEmail, getAuthPassword(pin));
+        console.log('[Login] Staff Auth sign-in successful');
+        setSuccess(`Welcome back, ${user.name}!`);
+        
+        // Persist preferences
+        try {
+          localStorage.setItem('OPay_Remember_Me', rememberMe ? 'true' : 'false');
+          if (rememberMe) {
+            localStorage.setItem('OPay_Last_Login_Tab', 'staff');
+            localStorage.setItem('OPay_Last_Staff_Phone', loginPhone);
+          } else {
+            localStorage.removeItem('OPay_Last_Staff_Phone');
+          }
+        } catch (e) {}
+        
+        // Cache all users for offline mode
+        try {
+            const userWithPin = { ...user, pin }; // Inject raw pin for hashing in cache
+            await saveCachedUsersBatch([...registeredUsers, userWithPin]);
+            setSuccess(`Welcome back, ${user.name}! Offline access has been successfully prepared.`);
+        } catch (e) {
+            console.error('Failed to cache users', e);
+        }
+
+        onLogin(user);
+      } catch (authErr: any) {
+        console.warn('[Login] Staff Auth failed:', authErr.code);
+        if (authErr.code === 'auth/network-request-failed' || authErr.message?.toLowerCase().includes('network')) {
+          setError('A network error occurred. Please check your internet connection, or switch the System Mode to "Offline" above to log in using cached credentials.');
+        } else {
+          setError(getFriendlyErrorMessage(authErr.code));
+        }
+      }
+    } catch (err: any) {
+      console.error('[Login] Critical staff login error:', err);
+      setError(`Login failed: ${err.message}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleManagerLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmitting) return;
+    setError('');
+    setSuccess('');
+    
+    if (!managerPhone.trim()) {
+      setError('Please enter your registered Manager Phone Number or Full Name.');
+      return;
+    }
+
+    if (!pin || pin.length !== 4) {
+      setError('Please enter your 4-digit PIN.');
+      return;
+    }
+
+    const inputRaw = managerPhone.trim();
+    const mode = localStorage.getItem('POSTrack_Mode') || 'online';
+    
+    setIsSubmitting(true);
+    console.log(`[Login] Manager login attempt in ${mode} mode for:`, inputRaw);
+
+    if (mode === 'offline') {
+      try {
+        const user = await verifyOfflineUserCredentials(inputRaw, pin, 'Manager');
+        
+        if (user) {
+          console.log('[Login] Manager Offline login success for:', user.name);
+          onLogin(user);
+        } else {
+          setError('Invalid credentials for offline login. Please log in online at least once.');
+        }
+      } catch (err) {
+        console.error('[Login] Manager Offline login error:', err);
+        setError('Offline login failed.');
+      } finally {
+        setIsSubmitting(false);
+      }
+      return;
+    }
+    
+    // ... (rest of the existing online login logic)
+    const inputPhoneDigits = cleanPhoneForCompare(inputRaw);
+    const inputNameSearch = inputRaw.toLowerCase().replace(/\s+/g, '');
+    const normalizedInputPhone = normalizePhone(inputRaw);
+    
+    console.log('[Login] Manager login attempt for:', inputRaw);
+
+    try {
+      // 1. Find the Manager document using flexible matching
+      let matchedManager = matchUserInList(managerUsers, inputRaw) || matchUserInList(registeredUsers, inputRaw);
+
+      console.log('[Login] Local match attempt result:', matchedManager ? `Found locally: ${matchedManager.name}` : 'Not found locally');
+
+      // 2. Direct Firestore query from "users" collection
+      let fetchedDocsCount = 0;
+      if (!matchedManager) {
+        console.log('[Login] Manager not found locally. Querying Firestore directly from "users" collection...');
+        try {
+          const usersRef = collection(db, 'users');
+          const inputPhone = cleanPhoneForCompare(inputRaw);
+          const q = inputPhone 
+            ? query(usersRef, where('phone', '==', inputPhone))
+            : query(usersRef, where('name', '==', inputRaw));
+          
+          const snap = await getDocs(q);
+          fetchedDocsCount = snap.size;
+          if (!snap.empty) {
+            const allCloudUsers = snap.docs.map(docSnap => mapFirestoreUser(docSnap.data(), docSnap.id));
+            matchedManager = matchUserInList(allCloudUsers, inputRaw);
+            if (matchedManager) {
+              console.log('[Login] Found manager in Firestore (targeted search):', matchedManager.name, 'UID:', matchedManager.uid);
+            }
+          }
+          if (!matchedManager) {
+            // Fallback: full users list search in Firestore
+            const allSnap = await getDocs(usersRef);
+            fetchedDocsCount = allSnap.size;
+            if (!allSnap.empty) {
+              const allCloudUsers = allSnap.docs.map(docSnap => mapFirestoreUser(docSnap.data(), docSnap.id));
+              matchedManager = matchUserInList(allCloudUsers, inputRaw);
+              if (matchedManager) {
+                console.log('[Login] Found manager in Firestore (full scan fallback):', matchedManager.name, 'UID:', matchedManager.uid);
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('[Login] Firestore manager query/lookup failed:', err);
+        }
+      }
+
+      // Print comprehensive report of Firestore lookup parameters (Task 7)
+      console.log('--- FIRESTORE AUTH AUDIT REPORT ---');
+      console.log('Firestore collection: "users"');
+      console.log('Document ID (located):', matchedManager ? matchedManager.uid : 'N/A (Not Found)');
+      console.log('Phone number entered:', inputRaw);
+      console.log('Normalized phone:', normalizedInputPhone);
+      console.log('UID of located profile:', matchedManager ? matchedManager.uid : 'N/A');
+      console.log('Query Filters:', {
+        role: 'Manager',
+        phoneNumber: normalizedInputPhone,
+        fullName: inputRaw
+      });
+      console.log('Query Returned Documents Count:', fetchedDocsCount);
+      console.log('Matched Manager Profile:', matchedManager);
+      console.log('------------------------------------');
+
+      if (!matchedManager) {
+        setError('Manager account not found. Please register first.');
+        console.log('[Login Result] FAILURE: Manager profile not found in "users" collection.');
+        setIsSubmitting(false);
+        return;
+      }
+
+      // 3. Attempt Firebase Auth sign-in
+      const managerPhoneKey = cleanPhoneForCompare(matchedManager.phone || matchedManager.phoneNumber || '');
+      const authEmail = `${managerPhoneKey}@opay-pos.com`;
+      
+      console.log('[Login] Attempting Auth sign-in for manager:', matchedManager.name, 'Email:', authEmail);
+      
+      try {
+        await signInWithEmailAndPassword(auth, authEmail, getAuthPassword(pin));
+        console.log('[Login] Manager Auth sign-in successful. UID:', auth.currentUser?.uid);
+        console.log('[Login Result] SUCCESS', {
+          name: matchedManager.name,
+          uid: matchedManager.uid,
+          email: authEmail
+        });
+        
+        // Persist preferences
+        try {
+          localStorage.setItem('OPay_Remember_Me', rememberMe ? 'true' : 'false');
+          if (rememberMe) {
+            localStorage.setItem('OPay_Last_Login_Tab', 'manager');
+            localStorage.setItem('OPay_Last_Manager_Phone', managerPhone);
+          } else {
+            localStorage.removeItem('OPay_Last_Manager_Phone');
+          }
+        } catch (e) {}
+
+        // Cache all users for offline mode
+        try {
+          const managerWithPin = { ...matchedManager, pin }; // Inject raw pin for hashing in cache
+          await saveCachedUsersBatch([...registeredUsers, managerWithPin]);
+          setSuccess(`Access Granted! Welcome back, ${matchedManager.name}. Offline access has been successfully prepared.`);
+        } catch (e) {
+            console.error('Failed to cache users', e);
+        }
+
+        onLogin(matchedManager);
+      } catch (authErr: any) {
+        console.warn('[Login] Manager Auth failed:', authErr.code);
+        if (authErr.code === 'auth/network-request-failed' || authErr.message?.toLowerCase().includes('network')) {
+          setError('A network error occurred. Please check your internet connection, or switch the System Mode to "Offline" above to log in using cached credentials.');
+        } else {
+          setError(getFriendlyErrorMessage(authErr.code));
+        }
+      }
+    } catch (err: any) {
+      console.error('[Login] Critical manager login error:', err);
+      console.log('[Login Result] FAILURE: Critical logic execution error.', {
+        message: err.message
+      });
+      setError(`Login error: ${err.message}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isRegistering) return;
+    setError('');
+    setSuccess('');
+
+    if (!regName.trim()) {
+      setError('Please enter your full name.');
+      return;
+    }
+
+    if (regRole === 'Manager' && !regPhone.trim()) {
+      setError('A valid Phone Number is required for Manager accounts.');
+      return;
+    }
+
+    if (!regPin || regPin.length !== 4 || !/^\d+$/.test(regPin)) {
+      setError('Please choose a secure 4-digit numeric passcode PIN.');
+      return;
+    }
+
+    if (regPhone && !/^\+?\d{8,15}$/.test(regPhone.replace(/\s+/g, ''))) {
+      setError('Please enter a valid phone number (8-15 digits).');
+      return;
+    }
+
+    // Check duplicate names or phones to avoid confusion
+    const exists = registeredUsers.some(u => 
+      u.role === regRole && 
+      (u.name.trim().toLowerCase() === regName.trim().toLowerCase() || 
+       (u.phone && cleanPhoneForCompare(u.phone) === cleanPhoneForCompare(regPhone)))
+    );
+    if (exists) {
+      const existingUser = registeredUsers.find(u => 
+        u.role === regRole && 
+        (u.name.trim().toLowerCase() === regName.trim().toLowerCase() || 
+         (u.phone && cleanPhoneForCompare(u.phone) === cleanPhoneForCompare(regPhone)))
+      );
+      setError(`An account named "${existingUser?.name}" already exists as a ${regRole}.`);
+      return;
+    }
+
+    // Check PIN collision for safety
+    const pinExists = registeredUsers.some(u => u.pin === regPin);
+    if (pinExists && regRole === 'Manager') {
+      setError('This PIN is already associated with another account. Please choose a different 4-digit PIN.');
+      return;
+    }
+
+    let manager: User | undefined;
+    if (regRole === 'Employee') {
+      const referralCode = regReferralCode.trim().toUpperCase();
+      console.log('DEBUG: Looking for manager with referral code (normalized):', referralCode);
+      
+      manager = registeredUsers.find(u => {
+        const dbReferralCode = u.referralCode ? u.referralCode.toUpperCase() : '';
+        console.log(`DEBUG: Checking local user: ${u.name}, referralCode: ${dbReferralCode}`);
+        return dbReferralCode === referralCode;
+      });
+      
+      if (!manager) {
+        try {
+          const usersRef = collection(db, 'users');
+          const referralCodeSearch = referralCode.toUpperCase();
+          console.log('DEBUG: Referral code lookup in cloud for:', referralCodeSearch);
+          
+          const snap = await getDocs(query(usersRef, where('referralCode', '==', referralCodeSearch)));
+          
+          if (!snap.empty) {
+            manager = snap.docs[0].data() as User;
+            console.log('DEBUG: Referral code match found in cloud! User:', manager.name);
+          } else {
+            console.log('DEBUG: Referral code NOT found in cloud.');
+          }
+        } catch (err) {
+          console.error('Global Firestore referral code lookup failed', err);
+        }
+      }
+
+      if (!manager) {
+        setError('Invalid referral code. Please check and try again.');
+        return;
+      }
+    } else if (regRole === 'Manager' && regReferralCode.trim()) {
+      const referralCode = regReferralCode.trim().toUpperCase();
+      console.log('DEBUG: Manager specified optional referral code during sign up:', referralCode);
+      
+      let referrerManager = registeredUsers.find(u => {
+        const dbReferralCode = u.referralCode ? u.referralCode.toUpperCase() : '';
+        return dbReferralCode === referralCode;
+      });
+      
+      if (!referrerManager) {
+        try {
+          const usersRef = collection(db, 'users');
+          const snap = await getDocs(query(usersRef, where('referralCode', '==', referralCode)));
+          if (!snap.empty) {
+            referrerManager = snap.docs[0].data() as User;
+          }
+        } catch (err) {
+          console.error('Firestore referral lookup failed:', err);
+        }
+      }
+      
+      if (!referrerManager) {
+        setError('Invalid referral code. Please check and try again, or leave it blank.');
+        return;
+      }
+    }
+
+    // Build unique ID
+    const randomId = Math.random().toString(36).substr(2, 9);
+    const userId = regRole === 'Manager' ? `mgr_${randomId}` : `emp_${randomId}`;
+
+    const newUser: User = {
+      id: userId,
+      name: regName.trim(),
+      role: regRole,
+      pin: regPin,
+      phone: regPhone.trim() ? normalizePhone(regPhone) : `080${Math.floor(10000000 + Math.random() * 90000000)}`,
+      ownerId: regRole === 'Manager' ? userId : (manager?.id || managerUsers[0]?.id || 'mgr_1'),
+      activated: true,
+      email: regEmail.trim() || undefined,
+      password: regPassword || undefined,
+      referralCode: regRole === 'Manager' ? `MGR-${randomId.toUpperCase()}` : undefined,
+      referredBy: regReferralCode.trim() ? regReferralCode.trim().toUpperCase() : undefined,
+      areaOfWorking: regRole === 'Employee' ? regArea.trim() : undefined
+    };
+
+    setIsRegistering(true);
+    try {
+      await onRegister(newUser);
+      setSuccess(`Hooray! ${regRole} account created successfully for ${regName}!`);
+      
+      // Smooth reset and auto-select in Login screen
+      setTimeout(() => {
+        setAuthMode('login');
+        if (regRole === 'Employee') {
+          setLoginTab('staff');
+          setLoginPhone(newUser.phone || newUser.name);
+          setPin(newUser.pin || '');
+          try {
+            localStorage.setItem('OPay_Last_Login_Tab', 'staff');
+            localStorage.setItem('OPay_Last_Staff_Phone', newUser.phone || newUser.name);
+          } catch (e) {}
+        } else {
+          setLoginTab('manager');
+          setManagerPhone(newUser.phone || newUser.name);
+          setPin(newUser.pin || '');
+          try {
+            localStorage.setItem('OPay_Last_Login_Tab', 'manager');
+            localStorage.setItem('OPay_Last_Manager_Phone', newUser.phone || newUser.name);
+          } catch (e) {}
+        }
+        // Reset registration form
+        setRegName('');
+        setRegPin('');
+        setRegPhone('');
+        setRegEmail('');
+        setRegPassword('');
+        setRegReferralCode('');
+        try {
+          localStorage.removeItem('OPay_Saved_Referral_Code');
+        } catch (e) {}
+        setError('');
+        setSuccess('');
+        setIsRegistering(false);
+      }, 1800);
+    } catch (err: any) {
+      console.error('[Registration] Failed with error details:', err);
+      setError(err.userFriendlyMessage || err.message || getFriendlyErrorMessage(err.code || ''));
+      setIsRegistering(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-tr from-emerald-50/40 via-neutral-50 to-indigo-50/40 flex flex-col justify-center items-center p-4 sm:p-6 font-sans selection:bg-[#00B87A]/20 relative overflow-hidden">
+      
+      {/* Show Error with Login link if needed */}
+      {error && (
+        <div className="fixed top-4 z-50 w-full max-w-sm px-4">
+          <div className="bg-red-50 border border-red-200 text-red-800 p-4 rounded-2xl shadow-lg">
+            <p className="text-sm font-medium">{error}</p>
+            {error.includes('already exists') && (
+              <button 
+                onClick={() => setAuthMode('login')}
+                className="mt-2 w-full bg-red-600 text-white text-xs font-bold py-2 rounded-xl"
+              >
+                Login Now
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      <div className="absolute bottom-10 right-10 w-80 h-80 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none animate-pulse" />
+      <div className="absolute top-1/2 left-1/3 w-96 h-96 bg-emerald-500/5 rounded-full blur-[100px] pointer-events-none" />
+
+      <div className="w-full max-w-lg bg-white/90 backdrop-blur-xl rounded-[2.5rem] shadow-[0_20px_50px_rgba(0,0,0,0.05)] overflow-hidden border border-white/60 z-10 transition-all">
+        
+        {/* Header Banner - OPay Styled Theme */}
+        <div className="bg-gradient-to-br from-[#00B87A] via-[#00a36c] to-emerald-900 p-8 sm:p-12 text-center text-white relative">
+          <div className="absolute top-6 right-6 bg-white/15 px-3 py-1 rounded-full text-[10px] font-mono tracking-widest uppercase font-black flex items-center gap-1.5 backdrop-blur-md border border-white/10">
+            <span className="w-2 h-2 rounded-full bg-emerald-300 animate-ping" />
+            System Live
+          </div>
+
+          <motion.div 
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            transition={{ type: 'spring', damping: 12 }}
+            className="w-20 h-20 bg-white/10 rounded-[2rem] flex items-center justify-center mx-auto mb-6 border border-white/20 backdrop-blur-xl shadow-2xl"
+          >
+            <Smartphone className="w-10 h-10 text-white drop-shadow-lg" />
+          </motion.div>
+          <h2 className="text-3xl font-black tracking-tight font-sans uppercase">Dan Godal</h2>
+          <p className="text-emerald-100/80 text-[11px] font-bold mt-2 max-w-xs mx-auto uppercase tracking-[0.2em] leading-relaxed">
+            Premium POS Audit Terminal
+          </p>
+        </div>
+
+        {/* Mode Selector */}
+        <div className="bg-neutral-50 px-8 py-4 border-b border-neutral-100 flex items-center justify-between">
+          <span className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest">System Mode</span>
+          <div className="flex gap-4">
+            <button
+              onClick={() => { localStorage.setItem('POSTrack_Mode', 'online'); setMode('online'); setAuthMode('login'); }}
+              className={`px-8 py-4 rounded-full text-[13px] font-black uppercase flex items-center gap-3 transition-all active:scale-95 cursor-pointer shadow-sm ${
+                mode === 'online'
+                  ? 'bg-emerald-500 text-white shadow-emerald-500/20'
+                  : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300'
+              }`}
+            >
+              <div className={`w-3 h-3 rounded-full ${mode === 'online' ? 'bg-emerald-100 animate-pulse' : 'bg-neutral-400'}`}></div>
+              Online
+            </button>
+            <button
+              onClick={() => { localStorage.setItem('POSTrack_Mode', 'offline'); setMode('offline'); setAuthMode('login'); }}
+              className={`px-8 py-4 rounded-full text-[13px] font-black uppercase flex items-center gap-3 transition-all active:scale-95 cursor-pointer shadow-sm ${
+                mode === 'offline'
+                  ? 'bg-amber-500 text-white shadow-amber-500/20'
+                  : 'bg-neutral-200 text-neutral-600 hover:bg-neutral-300'
+              }`}
+            >
+              <div className={`w-3 h-3 rounded-full ${mode === 'offline' ? 'bg-amber-100 animate-pulse' : 'bg-neutral-400'}`}></div>
+              Offline
+            </button>
+          </div>
+        </div>
+
+        {/* Mode Selector Tab (Login vs Register) */}
+        <div className="flex border-b border-neutral-100 bg-neutral-50/50 p-2">
+          <button
+            onClick={() => {
+              setAuthMode('login');
+              setError('');
+              setSuccess('');
+            }}
+            className={`flex-1 py-3 px-4 rounded-2xl text-xs font-black tracking-wider uppercase transition-all duration-150 flex items-center justify-center gap-2 ${
+              authMode === 'login'
+                ? 'bg-white text-neutral-850 shadow-sm border border-neutral-100 font-extrabold'
+                : 'text-neutral-400 hover:text-neutral-700 font-bold'
+            }`}
+          >
+            <KeyRound className="w-4 h-4 text-[#00B87A]" />
+            <span>Secure Login</span>
+          </button>
+          <button
+            onClick={() => {
+              setAuthMode('register');
+              setError('');
+              setSuccess('');
+            }}
+            className={`flex-1 py-3 px-4 rounded-2xl text-xs font-black tracking-wider uppercase transition-all duration-150 flex items-center justify-center gap-2 relative ${
+              authMode === 'register'
+                ? 'bg-white text-neutral-850 shadow-sm border border-neutral-100 font-extrabold'
+                : 'text-neutral-400 hover:text-neutral-700 font-bold'
+            }`}
+          >
+            <UserPlus className="w-4 h-4 text-emerald-600" />
+            <span>Register Account</span>
+            <span className="absolute -top-1 right-2 bg-rose-500 text-white text-[8px] font-black font-mono px-1.5 py-0.5 rounded-full animate-bounce">
+              NEW
+            </span>
+          </button>
+        </div>
+
+        {/* Screen Content */}
+        <div className="p-6 sm:p-8">
+          
+          {/* Notifications */}
+          <AnimatePresence mode="wait">
+            {error && (
+              <motion.div 
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="mb-5 p-3.5 bg-rose-50 border border-rose-100 text-rose-700 rounded-2xl flex items-start gap-2.5 text-xs font-bold"
+              >
+                <ShieldAlert className="w-4.5 h-4.5 shrink-0 text-rose-500 mt-0.5" />
+                <span>{error}</span>
+              </motion.div>
+            )}
+
+            {success && (
+              <motion.div 
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                className="mb-5 p-3.5 bg-emerald-50 border border-emerald-100 text-[#00B87A] rounded-2xl flex items-start gap-2.5 text-xs font-bold"
+              >
+                <CheckCircle2 className="w-4.5 h-4.5 shrink-0 text-emerald-500 mt-0.5" />
+                <span>{success}</span>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {authMode === 'login' ? (
+            <div>
+              {/* Login Sub-Tabs: Employee vs Manager */}
+              <div className="grid grid-cols-2 gap-2 bg-neutral-100 p-1 rounded-xl mb-6">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoginTab('staff');
+                    setError('');
+                    setPin('');
+                  }}
+                  className={`py-2 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all ${
+                    loginTab === 'staff'
+                      ? 'bg-[#00B87A] text-white shadow'
+                      : 'text-neutral-500 hover:text-neutral-800'
+                  }`}
+                >
+                  👤 Cashier / Staff
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoginTab('manager');
+                    setError('');
+                    setPin('');
+                  }}
+                  className={`py-2 text-[11px] font-bold uppercase tracking-wider rounded-lg transition-all ${
+                    loginTab === 'manager'
+                      ? 'bg-neutral-800 text-white shadow'
+                      : 'text-neutral-500 hover:text-neutral-800'
+                  }`}
+                >
+                  👑 Manager Portal
+                </button>
+              </div>
+
+              {loginTab === 'staff' ? (
+                /* STAFF LOGIN FORM */
+                <form onSubmit={handleStaffLogin} className="space-y-5">
+                  <div>
+                    <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-widest mb-2">
+                      Cashier Phone Number or Full Name
+                    </label>
+                    <div className="relative">
+                      <Smartphone className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
+                      <input
+                        type="text"
+                        value={loginPhone}
+                        onChange={(e) => {
+                          setLoginPhone(e.target.value);
+                          setError('');
+                        }}
+                        placeholder="e.g. 08123456781 or Cashier Name"
+                        className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-12 pr-4 py-3.5 text-xs font-bold text-neutral-800 focus:outline-none focus:border-[#00B87A] focus:ring-1 focus:ring-[#00B87A]"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <div className="flex justify-between items-center mb-2">
+                        <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-widest">
+                          Passcode (4-digit PIN)
+                        </label>
+                        <span className="text-[10px] text-neutral-400 font-medium font-mono">Quick check-in</span>
+                      </div>
+                      <div className="relative">
+                        <Lock className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
+                        <input
+                          type={showPin ? "text" : "password"}
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          maxLength={4}
+                          value={pin}
+                          onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+                          placeholder="Enter 4-digit PIN"
+                          className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-12 pr-12 py-3.5 text-base font-mono font-black text-neutral-850 focus:outline-none focus:border-[#00B87A] focus:ring-1 focus:ring-[#00B87A] tracking-widest placeholder:tracking-normal placeholder:font-sans placeholder:font-normal placeholder:text-sm text-center"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPin(!showPin)}
+                          className="absolute right-4 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 transition"
+                        >
+                          {showPin ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Tactile Virtual PIN Pad for Cashier login */}
+                    <div className="bg-neutral-50/60 border border-neutral-100 p-4 rounded-3xl">
+                      <div className="flex justify-between items-center mb-3">
+                        <div className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider">Tactile POS Keypad</div>
+                        <button 
+                          type="button" 
+                          onClick={() => setShowForgotPasscode(true)}
+                          className="text-[10px] text-[#00B87A] font-bold underline hover:text-[#00a36c] cursor-pointer uppercase tracking-wider font-mono"
+                        >
+                          Forgot Passcode?
+                        </button>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3 max-w-[260px] mx-auto">
+                        {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+                          <button
+                            key={num}
+                            type="button"
+                            onClick={() => {
+                              if (pin.length < 4) {
+                                setPin(prev => prev + num);
+                                setError('');
+                              }
+                            }}
+                            className="w-14 h-14 rounded-2xl border border-neutral-200 bg-white hover:bg-neutral-50 text-neutral-800 text-lg font-black font-mono shadow-sm active:scale-90 active:bg-neutral-100 transition-all flex items-center justify-center mx-auto cursor-pointer"
+                          >
+                            {num}
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPin('');
+                            setError('');
+                          }}
+                          className="w-14 h-14 rounded-2xl border border-neutral-200 bg-rose-50 hover:bg-rose-100 text-rose-600 text-[10px] font-black font-sans shadow-sm active:scale-90 transition-all flex items-center justify-center mx-auto cursor-pointer uppercase"
+                        >
+                          Clear
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (pin.length < 4) {
+                              setPin(prev => prev + '0');
+                              setError('');
+                            }
+                          }}
+                          className="w-14 h-14 rounded-2xl border border-neutral-200 bg-white hover:bg-neutral-50 text-neutral-800 text-lg font-black font-mono shadow-sm active:scale-90 active:bg-neutral-100 transition-all flex items-center justify-center mx-auto cursor-pointer"
+                        >
+                          0
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPin(prev => prev.slice(0, -1));
+                            setError('');
+                          }}
+                          className="w-14 h-14 rounded-2xl border border-neutral-200 bg-amber-50 hover:bg-amber-100 text-amber-700 text-lg font-bold shadow-sm active:scale-90 transition-all flex items-center justify-center mx-auto cursor-pointer"
+                        >
+                          ⌫
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 px-1 mt-3">
+                    <input
+                      type="checkbox"
+                      id="rememberMeStaff"
+                      checked={rememberMe}
+                      onChange={(e) => {
+                        setRememberMe(e.target.checked);
+                        try {
+                          localStorage.setItem('OPay_Remember_Me', e.target.checked ? 'true' : 'false');
+                        } catch (err) {}
+                      }}
+                      className="w-4 h-4 text-[#00B87A] border-neutral-300 rounded focus:ring-[#00B87A] accent-[#00B87A] cursor-pointer"
+                    />
+                    <label htmlFor="rememberMeStaff" className="text-xs text-neutral-500 font-semibold cursor-pointer select-none">
+                      Remember login details on this device
+                    </label>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={!isUsersLoaded}
+                    className={`w-full bg-[#00B87A] hover:bg-[#00a36c] text-white rounded-2xl py-4 font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2.5 transition active:scale-[0.98] shadow-md shadow-[#00B87A]/20 mt-4 cursor-pointer ${!isUsersLoaded ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <span>{isUsersLoaded ? 'Log in to POS Terminal' : 'Loading Account Data...'}</span>
+                    {isUsersLoaded && <ArrowRight className="w-4 h-4 stroke-[3]" />}
+                  </button>
+                </form>
+              ) : (
+                /* MANAGER LOGIN FORM */
+                <form onSubmit={handleManagerLogin} className="space-y-5">
+                  <div className="p-4 bg-indigo-50 border border-indigo-100/65 rounded-2xl flex items-start gap-3">
+                    <ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-xs font-black text-indigo-900 uppercase tracking-wider">Manager Control Center</h4>
+                      <p className="text-[11px] text-indigo-700 mt-1 font-medium leading-relaxed">
+                        Managers can change commission rates, monitor all terminals, approve staff shifts, and export raw audits.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-widest mb-2">
+                      Manager Phone Number or Full Name
+                    </label>
+                    <div className="relative">
+                      <Smartphone className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
+                      <input
+                        type="text"
+                        value={managerPhone}
+                        onChange={(e) => {
+                          setManagerPhone(e.target.value);
+                          setError('');
+                        }}
+                        placeholder="e.g. 08123456789 or Dan Godal"
+                        className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-12 pr-4 py-3.5 text-xs font-bold text-neutral-800 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <div className="flex justify-between items-center mb-2">
+                        <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-widest">
+                          Manager Passcode (PIN)
+                        </label>
+                        {isUsersLoaded && managerUsers.length === 0 && (
+                          <span className="text-[10px] text-rose-600 font-bold">Please Register a Manager First</span>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <Lock className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
+                        <input
+                          type={showPin ? "text" : "password"}
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          maxLength={4}
+                          value={pin}
+                          onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
+                          placeholder="Enter Manager 4-Digit PIN"
+                          className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-12 pr-12 py-3.5 text-base font-mono font-black text-neutral-850 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 tracking-widest placeholder:tracking-normal placeholder:font-sans placeholder:font-normal placeholder:text-sm text-center"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowPin(!showPin)}
+                          className="absolute right-4 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 transition"
+                        >
+                          {showPin ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
+                        </button>
+                      </div>
+                    {isUsersLoaded && managerUsers.length > 0 ? (
+                        <p className="text-[10px] text-neutral-400 mt-2 font-medium">
+                          Hint: Use your registered 4-digit passcode PIN .
+                        </p>
+                      ) : isUsersLoaded ? (
+                        <p className="text-xs text-rose-600 font-bold mt-2 leading-relaxed">
+                          No manager account exists yet. Click the <strong className="underline cursor-pointer" onClick={() => { setAuthMode('register'); setRegRole('Manager'); }}>Register Account</strong> tab above to configure your manager profile!
+                        </p>
+                      ) : (
+                        <p className="text-[10px] text-neutral-400 mt-2 font-medium flex items-center gap-2">
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                          Synchronizing cloud user accounts...
+                        </p>
+                      )}
+                    </div>
+
+                    {isUsersLoaded && managerUsers.length > 0 && (
+                      /* Tactile Virtual PIN Pad for Manager login */
+                      <div className="bg-neutral-50/60 border border-neutral-100 p-4 rounded-3xl">
+                        <div className="flex justify-between items-center mb-3">
+                          <div className="text-[10px] text-neutral-400 font-bold uppercase tracking-wider">Tactile Manager Keypad</div>
+                          <button 
+                            type="button" 
+                            onClick={() => setShowForgotPasscode(true)}
+                            className="text-[10px] text-indigo-600 font-bold underline hover:text-indigo-800 cursor-pointer uppercase tracking-wider font-mono"
+                          >
+                            Forgot Passcode?
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-3 gap-3 max-w-[260px] mx-auto">
+                          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+                            <button
+                              key={num}
+                              type="button"
+                              onClick={() => {
+                                if (pin.length < 4) {
+                                  setPin(prev => prev + num);
+                                  setError('');
+                                }
+                              }}
+                              className="w-14 h-14 rounded-2xl border border-neutral-200 bg-white hover:bg-neutral-50 text-neutral-800 text-lg font-black font-mono shadow-sm active:scale-90 active:bg-neutral-100 transition-all flex items-center justify-center mx-auto cursor-pointer"
+                            >
+                              {num}
+                            </button>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPin('');
+                              setError('');
+                            }}
+                            className="w-14 h-14 rounded-2xl border border-neutral-200 bg-rose-50 hover:bg-rose-100 text-rose-600 text-[10px] font-black font-sans shadow-sm active:scale-90 transition-all flex items-center justify-center mx-auto cursor-pointer uppercase"
+                          >
+                            Clear
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (pin.length < 4) {
+                                setPin(prev => prev + '0');
+                                setError('');
+                              }
+                            }}
+                            className="w-14 h-14 rounded-2xl border border-neutral-200 bg-white hover:bg-neutral-50 text-neutral-800 text-lg font-black font-mono shadow-sm active:scale-90 active:bg-neutral-100 transition-all flex items-center justify-center mx-auto cursor-pointer"
+                          >
+                            0
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPin(prev => prev.slice(0, -1));
+                              setError('');
+                            }}
+                            className="w-14 h-14 rounded-2xl border border-neutral-200 bg-amber-50 hover:bg-amber-100 text-amber-700 text-lg font-bold shadow-sm active:scale-90 transition-all flex items-center justify-center mx-auto cursor-pointer"
+                          >
+                            ⌫
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 px-1 mt-3">
+                    <input
+                      type="checkbox"
+                      id="rememberMeManager"
+                      checked={rememberMe}
+                      onChange={(e) => {
+                        setRememberMe(e.target.checked);
+                        try {
+                          localStorage.setItem('OPay_Remember_Me', e.target.checked ? 'true' : 'false');
+                        } catch (err) {}
+                      }}
+                      className="w-4 h-4 text-indigo-600 border-neutral-300 rounded focus:ring-indigo-600 accent-indigo-600 cursor-pointer"
+                    />
+                    <label htmlFor="rememberMeManager" className="text-xs text-neutral-500 font-semibold cursor-pointer select-none">
+                      Remember login details on this device
+                    </label>
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={!isUsersLoaded}
+                    className={`w-full bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl py-4 font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2.5 transition active:scale-[0.98] shadow-md shadow-indigo-600/20 mt-4 cursor-pointer ${!isUsersLoaded ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <span>{isUsersLoaded ? 'Enter Manager Dashboard' : 'Loading Account Data...'}</span>
+                    {isUsersLoaded && <ArrowRight className="w-4 h-4 stroke-[3]" />}
+                  </button>
+                </form>
+              )}
+
+              {/* High-Security System Seal */}
+              <div className="mt-8 pt-5 border-t border-neutral-200/60 text-center">
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-neutral-50 rounded-full border border-neutral-200/50 text-[10px] text-neutral-400 font-mono tracking-wide font-semibold select-none">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  SECURED AES-256 POS CLIENT
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* ACCOUNT REGISTRATION FORM */
+            <form onSubmit={handleRegister} className="space-y-5 animate-fade-in">
+              <div className="text-center mb-1">
+                <span className="text-[10px] font-black uppercase tracking-widest bg-emerald-50 text-[#00B87A] px-3 py-1 rounded-full border border-emerald-100">
+                  <Sparkles className="w-3 h-3 inline mr-1" /> Custom Account Registration
+                </span>
+              </div>
+
+              {/* Role Picker Cards */}
+              <div className="space-y-2">
+                <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-widest">
+                  Choose Operator Role
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  {/* Manager Option */}
+                  <div
+                    onClick={() => setRegRole('Manager')}
+                    className={`p-4 rounded-2xl border-2 cursor-pointer transition-all flex flex-col justify-between ${
+                      regRole === 'Manager'
+                        ? 'border-indigo-500 bg-indigo-50/20 shadow-sm'
+                        : 'border-neutral-200 bg-white hover:border-neutral-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase text-indigo-950 font-mono flex items-center gap-1.5">
+                        👑 Manager 
+                        <span className="text-[8px] bg-indigo-600 text-white font-extrabold px-1.5 py-0.5 rounded-full uppercase tracking-wider scale-90 origin-left">FREE</span>
+                      </span>
+                      <input
+                        type="radio"
+                        checked={regRole === 'Manager'}
+                        onChange={() => {}}
+                        className="accent-indigo-600"
+                      />
+                    </div>
+                    <span className="text-[10px] text-neutral-400 font-semibold mt-2 leading-tight">
+                      Full control. Manage cashiers, sound, target levels & terminals.
+                    </span>
+                  </div>
+
+                  {/* Employee Option */}
+                  <div
+                    onClick={() => setRegRole('Employee')}
+                    className={`p-4 rounded-2xl border-2 cursor-pointer transition-all flex flex-col justify-between ${
+                      regRole === 'Employee'
+                        ? 'border-[#00B87A] bg-emerald-50/20'
+                        : 'border-neutral-200 bg-white hover:border-neutral-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-black uppercase text-emerald-950 font-mono">👤 Cashier / Staff</span>
+                      <input
+                        type="radio"
+                        checked={regRole === 'Employee'}
+                        onChange={() => {}}
+                        className="accent-[#00B87A]"
+                      />
+                    </div>
+                    <span className="text-[10px] text-neutral-400 font-semibold mt-2 leading-tight">
+                      Log slips. Focuses entirely on inputting withdrawals & transfers.
+                    </span>
+                  </div>
+                </div>
+
+                {regRole === 'Manager' && (
+                  <div className="bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-100 p-3 rounded-xl flex items-start gap-2.5 animate-pulse">
+                    <span className="text-base">⭐</span>
+                    <div className="text-left">
+                      <p className="text-[11px] font-black text-indigo-950 uppercase tracking-wide">Free Lifetime Manager Account Activated</p>
+                      <p className="text-[9px] text-indigo-700/80 font-semibold leading-relaxed mt-0.5">
+                        Track unlimited POS workers, manage active sessions, view comprehensive transaction statistics, and enforce direct terminal control with zero activation fees or monthly charges!
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Full Name */}
+              <div>
+                <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-widest mb-1.5">
+                  Full Name
+                </label>
+                <div className="relative">
+                  <UserIcon className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
+                  <input
+                    type="text"
+                    required
+                    value={regName}
+                    onChange={(e) => setRegName(e.target.value)}
+                    placeholder="e.g. Cashier Name"
+                    className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-12 pr-4 py-3.5 text-sm font-bold text-neutral-800 focus:outline-none focus:border-[#00B87A] focus:ring-1 focus:ring-[#00B87A] placeholder:text-neutral-400"
+                  />
+                </div>
+              </div>
+
+              {/* Phone Number */}
+              <div>
+                <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-widest mb-1.5">
+                  Phone Number (10 - 11 digits)
+                </label>
+                <div className="relative">
+                  <Phone className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
+                  <input
+                    type="tel"
+                    value={regPhone}
+                    onChange={(e) => setRegPhone(e.target.value.replace(/[^\d+]/g, ''))}
+                    placeholder="e.g. 08123456789"
+                    className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-12 pr-4 py-3.5 text-sm font-bold text-neutral-800 focus:outline-none focus:border-[#00B87A] focus:ring-1 focus:ring-[#00B87A] placeholder:text-neutral-400"
+                  />
+                </div>
+              </div>
+
+              {/* Referral Code / Manager Staff Code */}
+              {(regRole === 'Employee' || regRole === 'Manager') && (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-widest">
+                      {regRole === 'Employee' ? 'Manager Staff Code (Required)' : 'Affiliate Referral Code (Optional)'}
+                    </label>
+                    <span className="text-[9px] font-extrabold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
+                      {regRole === 'Employee' ? '🔗 Links Cashier to Manager Account' : '💰 Affiliate Commission Link'}
+                    </span>
+                  </div>
+                  <div className="relative">
+                    <KeyRound className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
+                    <input
+                      type="text"
+                      required={regRole === 'Employee'}
+                      value={regReferralCode}
+                      onChange={(e) => setRegReferralCode(e.target.value)}
+                      placeholder={regRole === 'Employee' ? "Enter Manager Code (e.g. MGR-123456789)" : "Enter Referrer Code (e.g. MGR-ABC123XYZ)"}
+                      className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-12 pr-4 py-3.5 text-sm font-bold text-neutral-800 focus:outline-none focus:border-[#00B87A] focus:ring-1 focus:ring-[#00B87A] placeholder:text-neutral-400 font-mono"
+                    />
+                  </div>
+                  {regRole === 'Manager' && regReferralCode.trim() && (
+                    <div className="mt-1.5 bg-emerald-50 border border-emerald-200/80 rounded-xl p-2.5 flex items-center gap-2 text-[11px] text-emerald-800 font-medium">
+                      <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>
+                        Referral Link Active: <strong className="font-bold font-mono text-emerald-900">{regReferralCode.trim().toUpperCase()}</strong>. Your sign up will be directly recorded under your referrer!
+                      </span>
+                    </div>
+                  )}
+                  <p className="text-[10px] text-neutral-400 font-medium mt-1 leading-snug">
+                    {regRole === 'Employee' 
+                      ? 'Ask your Manager for their unique MGR code. Entering it automatically connects your Cashier account to work under their terminal dashboard.'
+                      : ''
+                    }
+                  </p>
+                </div>
+              )}
+
+              {regRole === 'Employee' && (
+                <div>
+                  <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-widest mb-1.5">
+                    Work Area/Location
+                  </label>
+                  <div className="relative">
+                    <MapPin className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
+                    <input
+                      type="text"
+                      required
+                      value={regArea}
+                      onChange={(e) => setRegArea(e.target.value)}
+                      placeholder="e.g. Shop A12"
+                      className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-12 pr-4 py-3.5 text-sm font-bold text-neutral-800 focus:outline-none focus:border-[#00B87A] focus:ring-1 focus:ring-[#00B87A] placeholder:text-neutral-400"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Passcode PIN */}
+              <div>
+                <div className="flex justify-between items-center mb-1.5">
+                  <label className="block text-[10px] font-bold text-neutral-400 uppercase tracking-widest">
+                    Create 4-Digit Passcode (PIN)
+                  </label>
+                  <span className="text-[9px] text-rose-500 font-bold uppercase tracking-wider font-mono">Numbers Only</span>
+                </div>
+                <div className="relative">
+                  <Lock className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-neutral-400" />
+                  <input
+                    type={showRegPin ? "text" : "password"}
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={4}
+                    required
+                    value={regPin}
+                    onChange={(e) => setRegPin(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Enter unique 4-digit PIN"
+                    className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-12 pr-12 py-3.5 text-base font-mono font-black text-neutral-850 focus:outline-none focus:border-[#00B87A] focus:ring-1 focus:ring-[#00B87A] tracking-widest placeholder:tracking-normal placeholder:font-sans placeholder:font-normal placeholder:text-sm text-center"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowRegPin(!showRegPin)}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600 transition"
+                  >
+                    {showRegPin ? <EyeOff className="w-4.5 h-4.5" /> : <Eye className="w-4.5 h-4.5" />}
+                  </button>
+                </div>
+              </div>
+
+              {/* Cloud Sync Extra Fields (Optional) */}
+              <div className="border-t border-neutral-100 pt-4 mt-2">
+                <div className="flex items-center gap-1.5 mb-3 text-neutral-400">
+                  <Briefcase className="w-4 h-4" />
+                  <span className="text-[9px] font-bold tracking-widest uppercase">Optional Email Recovery</span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <input
+                      type="email"
+                      value={regEmail}
+                      onChange={(e) => setRegEmail(e.target.value)}
+                      placeholder="Email (Optional)"
+                      className="w-full bg-neutral-50 border border-neutral-200 rounded-xl px-4 py-2.5 text-xs font-bold text-neutral-800 focus:outline-none focus:border-[#00B87A]"
+                    />
+                  </div>
+                  <div>
+                    <input
+                      type="password"
+                      value={regPassword}
+                      onChange={(e) => setRegPassword(e.target.value)}
+                      placeholder="Password (Optional)"
+                      className="w-full bg-neutral-50 border border-neutral-200 rounded-xl px-4 py-2.5 text-xs font-bold text-neutral-800 focus:outline-none focus:border-[#00B87A]"
+                    />
+                  </div>
+                </div>
+              </div>
+
+               <button
+                type="submit"
+                disabled={isRegistering}
+                className={`w-full text-white rounded-2xl py-4 font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2.5 transition active:scale-[0.98] shadow-md mt-6 cursor-pointer ${
+                  isRegistering 
+                    ? 'bg-neutral-400 cursor-not-allowed shadow-none' 
+                    : regRole === 'Manager'
+                      ? 'bg-indigo-600 hover:bg-indigo-700 shadow-indigo-600/20'
+                      : 'bg-[#00B87A] hover:bg-[#00a36c] shadow-[#00B87A]/20'
+                }`}
+              >
+                <span>{isRegistering ? 'Registering...' : `Register ${regRole}`}</span>
+                {isRegistering ? (
+                  <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <ChevronRight className="w-4.5 h-4.5 stroke-[3]" />
+                )}
+              </button>
+            </form>
+          )}
+
+        </div>
+
+        {/* Footer info banner */}
+        <div className="bg-neutral-50 p-5 text-center border-t border-neutral-100 flex flex-col items-center justify-center gap-3">
+          <p className="text-[9px] text-neutral-400 max-w-xs leading-relaxed font-semibold">
+            All cashier sessions are monitored and logged. Keep your terminal safe. For support, call +2348141106560.
+          </p>
+          <WhatsAppSupportButton
+            context="Login / Registration Support"
+            buttonText="Need Help? Chat on WhatsApp"
+            variant="compact"
+          />
+        </div>
+
+      </div>
+
+      {showForgotPasscode && (
+        <div className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden shadow-2xl border border-neutral-200 text-neutral-800 p-6 relative text-center">
+            <button 
+              onClick={() => { setShowForgotPasscode(false); setForgotStep('info'); }} 
+              className="absolute top-4 right-4 p-1.5 text-neutral-400 hover:text-neutral-600 hover:bg-neutral-100 rounded-full transition"
+            >
+              <div className="w-5 h-5 flex items-center justify-center text-lg leading-none">&times;</div>
+            </button>
+            <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
+              <HelpCircle className="w-8 h-8" />
+            </div>
+            <h3 className="font-black text-lg mb-2 tracking-tight">Forgot Passcode?</h3>
+            
+            {forgotStep === 'info' && (
+              <>
+                {loginTab === 'staff' ? (
+                  <p className="text-sm text-neutral-600 mb-6 leading-relaxed">
+                    If you are a Cashier, please contact your Manager. They can securely reset your 4-digit PIN from their Manager Dashboard under the <strong>Profile Center</strong>.
+                  </p>
+                ) : (
+                  <p className="text-sm text-neutral-600 mb-6 leading-relaxed">
+                    If you forgot your Manager PIN, I can help you reset it.
+                  </p>
+                )}
+                {loginTab === 'manager' && (
+                  <button
+                    onClick={() => setForgotStep('verify')}
+                    className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-sm transition cursor-pointer uppercase tracking-wider mb-3"
+                  >
+                    Reset PIN
+                  </button>
+                )}
+                <button
+                  onClick={() => { setShowForgotPasscode(false); setForgotStep('info'); }}
+                  className="w-full py-3 bg-neutral-900 hover:bg-neutral-800 text-white font-bold rounded-xl text-sm transition cursor-pointer uppercase tracking-wider"
+                >
+                  {loginTab === 'manager' ? 'Cancel' : 'Okay, Got It'}
+                </button>
+              </>
+            )}
+
+            {forgotStep === 'verify' && (
+              <>
+                <p className="text-sm text-neutral-600 mb-6">Please enter your registered phone number to verify your manager account.</p>
+                <input
+                  type="text"
+                  value={forgotPhone}
+                  onChange={(e) => setForgotPhone(e.target.value)}
+                  placeholder="Enter phone number"
+                  className="w-full p-3 border border-neutral-200 rounded-xl mb-4 text-center"
+                />
+                {forgotError && <p className="text-red-500 text-xs mb-4">{forgotError}</p>}
+                <button
+                  onClick={async () => {
+                    setForgotError('');
+                    const phone = cleanPhoneForCompare(forgotPhone);
+                    const user = managerUsers.find(u => cleanPhoneForCompare(u.phone || '') === phone);
+                    if (user) {
+                      setTargetUser(user);
+                      setForgotStep('new-pin');
+                    } else {
+                      setForgotError('Manager account not found with this phone number.');
+                    }
+                  }}
+                  className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-sm transition cursor-pointer uppercase tracking-wider"
+                >
+                  Verify
+                </button>
+              </>
+            )}
+
+            {forgotStep === 'new-pin' && (
+              <>
+                <p className="text-sm text-neutral-600 mb-6">Enter a new 4-digit PIN for {targetUser?.name}.</p>
+                <input
+                  type="password"
+                  value={forgotNewPin}
+                  onChange={(e) => {
+                    const val = e.target.value.replace(/\D/g, '');
+                    if (val.length <= 4) setForgotNewPin(val);
+                  }}
+                  placeholder="New 4-digit PIN"
+                  className="w-full p-3 border border-neutral-200 rounded-xl mb-4 text-center text-xl tracking-[0.5em]"
+                />
+                {forgotError && <p className="text-red-500 text-xs mb-4">{forgotError}</p>}
+                <button
+                  onClick={async () => {
+                    if (forgotNewPin.length !== 4) {
+                      setForgotError('PIN must be 4 digits.');
+                      return;
+                    }
+                    if (targetUser) {
+                      try {
+                        const userDoc = doc(db, 'users', targetUser.id);
+                        await updateDoc(userDoc, { pin: forgotNewPin });
+                        setForgotStep('success');
+                      } catch (e) {
+                        console.error('Error updating PIN:', e);
+                        setForgotError(`Failed to update PIN: ${(e as Error).message}`);
+                      }
+                    }
+                  }}
+                  className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-sm transition cursor-pointer uppercase tracking-wider"
+                >
+                  Update PIN
+                </button>
+              </>
+            )}
+
+            {forgotStep === 'success' && (
+              <>
+                <p className="text-sm text-green-600 mb-6 font-bold">PIN updated successfully!</p>
+                <button
+                  onClick={() => { setShowForgotPasscode(false); setForgotStep('info'); setForgotPhone(''); setForgotNewPin(''); }}
+                  className="w-full py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl text-sm transition cursor-pointer uppercase tracking-wider"
+                >
+                  Done
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}

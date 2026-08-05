@@ -1,0 +1,2518 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useMemo, useEffect } from 'react';
+import { Transaction, User, AppSettings } from '../types';
+import { formatNaira, calculateTerminalFee, calculateCBNCharge, generateId, getCalculatedFinancials } from '../utils';
+import { 
+  AlertTriangle, 
+  Search, 
+  Check, 
+  MessageSquare, 
+  Copy, 
+  Clock, 
+  User as UserIcon, 
+  Calendar,
+  Layers,
+  ArrowRight,
+  Info,
+  X,
+  CreditCard,
+  DollarSign,
+  Plus,
+  ArrowDownRight,
+  ArrowUpLeft,
+  FolderOpen,
+  ChevronRight,
+  Trash2,
+  ListFilter,
+  PieChart,
+  Building2,
+  History
+} from 'lucide-react';
+
+const getProviderStyle = (provider: string) => {
+  const p = provider.toLowerCase();
+  if (p.includes('opay')) {
+    return {
+      bg: 'bg-emerald-50/50 border-emerald-200/40 text-emerald-800',
+      progress: 'bg-emerald-500',
+      badge: 'bg-emerald-100 text-emerald-800 border-emerald-200/50',
+      iconColor: 'text-emerald-500'
+    };
+  }
+  if (p.includes('moniepoint')) {
+    return {
+      bg: 'bg-blue-50/50 border-blue-200/40 text-blue-800',
+      progress: 'bg-blue-600',
+      badge: 'bg-blue-100 text-blue-800 border-blue-200/50',
+      iconColor: 'text-blue-500'
+    };
+  }
+  if (p.includes('palmpay')) {
+    return {
+      bg: 'bg-purple-50/50 border-purple-200/40 text-purple-800',
+      progress: 'bg-purple-600',
+      badge: 'bg-purple-100 text-purple-800 border-purple-200/50',
+      iconColor: 'text-purple-500'
+    };
+  }
+  if (p.includes('nomba')) {
+    return {
+      bg: 'bg-amber-50/50 border-amber-200/40 text-amber-800',
+      progress: 'bg-amber-500',
+      badge: 'bg-amber-100 text-amber-800 border-amber-200/50',
+      iconColor: 'text-amber-500'
+    };
+  }
+  return {
+    bg: 'bg-neutral-50 border-neutral-200/40 text-neutral-800',
+    progress: 'bg-neutral-500',
+    badge: 'bg-neutral-200 text-neutral-800 border-neutral-350',
+    iconColor: 'text-neutral-500'
+  };
+};
+
+interface UnpaidChargesLedgerProps {
+  transactions: Transaction[];
+  onUpdateTransaction: (tx: Transaction) => void;
+  onApproveTransaction?: (tx: Transaction) => void;
+  onReverseTransaction?: (tx: Transaction) => void;
+  onAddTransaction?: (tx: Transaction) => void;
+  currentUser?: User;
+  settings?: AppSettings;
+}
+
+export function UnpaidChargesLedger({
+  transactions,
+  onUpdateTransaction,
+  onApproveTransaction,
+  onReverseTransaction,
+  onAddTransaction,
+  currentUser,
+  settings
+}: UnpaidChargesLedgerProps) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [timePeriod, setTimePeriod] = useState<'all' | 'today' | 'weekly' | 'monthly' | 'yearly'>('all');
+
+  // Employee editing settle state
+  const [settlingTx, setSettlingTx] = useState<Transaction | null>(null);
+  const [settleFeeInput, setSettleFeeInput] = useState<string>('');
+  const [settleAmountPaid, setSettleAmountPaid] = useState<string>('');
+  const [settlePaymentDate, setSettlePaymentDate] = useState<string>('');
+  const [settlePaymentNote, setSettlePaymentNote] = useState<string>('Partial payment');
+  const [settleFeeMethod, setSettleFeeMethod] = useState<'Cash' | 'CardDebit'>('Cash');
+
+  // New Grouped/Gathered Debtors view state
+  const [viewMode, setViewMode] = useState<'grouped' | 'individual' | 'history'>('grouped');
+  const [editingCustomerName, setEditingCustomerName] = useState<string | null>(null);
+  const [portfolioTxs, setPortfolioTxs] = useState<Transaction[]>([]);
+  const [showAddTxForm, setShowAddTxForm] = useState(false);
+  const [bulkFeeInput, setBulkFeeInput] = useState('');
+
+  // Add New Deferred Transaction internal form inside grouped account
+  const [newTxType, setNewTxType] = useState<'Withdrawal' | 'Transfer' | 'Deposit'>('Withdrawal');
+  const [newTxProvider, setNewTxProvider] = useState<'OPay' | 'Moniepoint' | 'PalmPay'>('OPay');
+  const [newTxAmount, setNewTxAmount] = useState('10000');
+  const [newTxFee, setNewTxFee] = useState('200');
+  const [newTxFeeMethod, setNewTxFeeMethod] = useState<'Cash' | 'CardDebit'>('Cash');
+  const [newTxNotes, setNewTxNotes] = useState('');
+
+  // Filter transactions with unpaid charges (including partially paid)
+  const unpaidTransactions = useMemo(() => {
+    let filteredTxs = transactions;
+    if (currentUser?.role === 'Employee') {
+      // STRICT FILTERING: Cashiers only see their OWN debt records
+      filteredTxs = filteredTxs.filter(tx => 
+        tx.employeeId === currentUser.id ||
+        tx.cashierId === currentUser.id ||
+        tx.createdBy === currentUser.id
+      );
+    }
+    return filteredTxs.filter(
+      (tx) => (tx.chargesStatus === 'Unpaid' || tx.chargesStatus === 'PartiallyPaid') && (tx.status || 'Success') !== 'Failed'
+    );
+  }, [transactions, currentUser]);
+
+  useEffect(() => {
+    if (settlingTx) {
+      const orig = (settlingTx.originalFeeAmount !== undefined && settlingTx.originalFeeAmount > 0) ? settlingTx.originalFeeAmount : (settlingTx.unpaidFeeAmount || settlingTx.customerFee || 200);
+      const remaining = (settlingTx.unpaidFeeAmount !== undefined && settlingTx.unpaidFeeAmount > 0) ? settlingTx.unpaidFeeAmount : orig;
+      setSettleFeeInput(orig.toString());
+      setSettleAmountPaid(remaining > 0 ? remaining.toString() : '');
+      setSettleFeeMethod(settlingTx.feeMethod || 'Cash');
+      
+      const tzOffset = new Date().getTimezoneOffset() * 60000;
+      const localISOTime = new Date(Date.now() - tzOffset).toISOString().slice(0, 16);
+      setSettlePaymentDate(localISOTime);
+      setSettlePaymentNote('Partial payment');
+    }
+  }, [settlingTx]);
+
+  // Sync portfolioTxs when editingCustomerName or unpaidTransactions shifts
+  useEffect(() => {
+    if (editingCustomerName) {
+      const matches = unpaidTransactions.filter(
+        tx => (tx.customerName || 'Walk-in Client').toLowerCase().trim() === editingCustomerName.toLowerCase().trim()
+      );
+      
+      setPortfolioTxs((prev) => {
+        return matches.map((match) => {
+          const existing = prev.find(p => p.id === match.id);
+          if (existing) {
+            return {
+              ...match,
+              unpaidFeeAmount: existing.unpaidFeeAmount,
+              feeMethod: existing.feeMethod
+            };
+          }
+          return match;
+        });
+      });
+    } else {
+      setPortfolioTxs([]);
+      setShowAddTxForm(false);
+      setBulkFeeInput('');
+    }
+  }, [editingCustomerName, unpaidTransactions]);
+
+  // Aggregate stats
+  const stats = useMemo(() => {
+    const totalDebt = unpaidTransactions.reduce((sum, tx) => sum + (tx.unpaidFeeAmount ?? tx.customerFee ?? 0), 0);
+    const debtorCount = unpaidTransactions.length;
+    
+    // Group by unique customerName
+    const uniqueDebtors = new Set(unpaidTransactions.map(tx => tx.customerName?.toLowerCase().trim()).filter(Boolean));
+    
+    return {
+      totalDebt,
+      debtorCount,
+      uniqueDebtorsCount: uniqueDebtors.size
+    };
+  }, [unpaidTransactions]);
+
+  // Calculate stats by period
+  const timeStats = useMemo(() => {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const sevenDaysAgo = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const startOfYear = new Date(now.getFullYear(), 0, 1).getTime();
+
+    let todaySum = 0;
+    let todayCount = 0;
+    let weeklySum = 0;
+    let weeklyCount = 0;
+    let monthlySum = 0;
+    let monthlyCount = 0;
+    let yearlySum = 0;
+    let yearlyCount = 0;
+
+    unpaidTransactions.forEach((tx) => {
+      const amt = tx.unpaidFeeAmount ?? tx.customerFee ?? 0;
+      const t = new Date(tx.timestamp).getTime();
+
+      if (t >= todayStart) {
+        todaySum += amt;
+        todayCount++;
+      }
+      if (t >= sevenDaysAgo) {
+        weeklySum += amt;
+        weeklyCount++;
+      }
+      if (t >= startOfMonth) {
+        monthlySum += amt;
+        monthlyCount++;
+      }
+      if (t >= startOfYear) {
+        yearlySum += amt;
+        yearlyCount++;
+      }
+    });
+
+    return {
+      today: { sum: todaySum, count: todayCount },
+      weekly: { sum: weeklySum, count: weeklyCount },
+      monthly: { sum: monthlySum, count: monthlyCount },
+      yearly: { sum: yearlySum, count: yearlyCount }
+    };
+  }, [unpaidTransactions]);
+
+  // Aggregate outstanding debts by normalized provider
+  const providerDebtStats = useMemo(() => {
+    const providerMap: Record<string, { total: number; count: number }> = {};
+    
+    unpaidTransactions.forEach((tx) => {
+      const rawProvider = tx.provider || 'Others';
+      let provider = rawProvider.trim();
+      const lower = provider.toLowerCase();
+      if (lower.includes('opay')) {
+        provider = 'OPay';
+      } else if (lower.includes('moniepoint')) {
+        provider = 'Moniepoint';
+      } else if (lower.includes('palmpay')) {
+        provider = 'PalmPay';
+      } else if (lower.includes('nomba')) {
+        provider = 'Nomba';
+      } else if (lower === '' || lower === 'others' || lower === 'other') {
+        provider = 'Others';
+      }
+      
+      const debt = tx.unpaidFeeAmount ?? tx.customerFee ?? 0;
+      if (!providerMap[provider]) {
+        providerMap[provider] = { total: 0, count: 0 };
+      }
+      providerMap[provider].total += debt;
+      providerMap[provider].count += 1;
+    });
+
+    const totalDebt = stats.totalDebt || 1; // avoid divide by zero
+
+    return Object.entries(providerMap)
+      .map(([provider, data]) => ({
+        provider,
+        total: data.total,
+        count: data.count,
+        percentage: (data.total / totalDebt) * 100
+      }))
+      .sort((a, b) => b.total - a.total);
+  }, [unpaidTransactions, stats.totalDebt]);
+
+  // Aggregate all historical debt payments across all transactions in the system
+  const allDebtPayments = useMemo(() => {
+    const list: Array<{
+      txId: string;
+      txAmount: number;
+      txType: string;
+      txProvider: string;
+      customerName: string;
+      customerPhone?: string;
+      paymentId: string;
+      date: string;
+      amount: number;
+      collectorName: string;
+      note: string;
+    }> = [];
+
+    let filteredTxs = transactions;
+    if (currentUser?.role === 'Employee') {
+      filteredTxs = filteredTxs.filter(tx => 
+        tx.employeeId === currentUser.id ||
+        tx.cashierId === currentUser.id ||
+        (tx.cashierName && tx.cashierName.toLowerCase().trim() === currentUser.name.toLowerCase().trim()) ||
+        (tx.addedBy && tx.addedBy.toLowerCase().trim() === currentUser.name.toLowerCase().trim())
+      );
+    }
+
+    filteredTxs.forEach((tx) => {
+      if (tx.chargePayments && tx.chargePayments.length > 0) {
+        tx.chargePayments.forEach((pay) => {
+          list.push({
+            txId: tx.id,
+            txAmount: tx.amount,
+            txType: tx.type,
+            txProvider: tx.provider || 'Others',
+            customerName: tx.customerName || 'Walk-in Client',
+            customerPhone: tx.customerPhone,
+            paymentId: pay.id,
+            date: pay.date,
+            amount: pay.amount,
+            collectorName: pay.collectorName,
+            note: pay.note
+          });
+        });
+      }
+    });
+
+    // Sort by date descending (newest payment first)
+    return list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [transactions]);
+
+  // Compute stats for debt payment history
+  const historyStats = useMemo(() => {
+    const totalRecovered = allDebtPayments.reduce((sum, p) => sum + p.amount, 0);
+    const count = allDebtPayments.length;
+    const avgRecovery = count > 0 ? totalRecovered / count : 0;
+    
+    // Unique customers who paid
+    const uniquePayees = new Set(allDebtPayments.map(p => p.customerName.toLowerCase().trim()));
+    
+    return {
+      totalRecovered,
+      count,
+      avgRecovery,
+      uniquePayeesCount: uniquePayees.size
+    };
+  }, [allDebtPayments]);
+
+  // Filter history by search query
+  const filteredHistory = useMemo(() => {
+    let list = allDebtPayments;
+    if (searchQuery.trim() !== '') {
+      const q = searchQuery.toLowerCase().trim();
+      list = list.filter(
+        pay => 
+          pay.customerName.toLowerCase().includes(q) ||
+          (pay.customerPhone && pay.customerPhone.includes(q)) ||
+          pay.collectorName.toLowerCase().includes(q) ||
+          pay.note.toLowerCase().includes(q) ||
+          pay.txType.toLowerCase().includes(q) ||
+          pay.txProvider.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [allDebtPayments, searchQuery]);
+
+  // Search and timeperiod filter
+  const filteredUnpaid = useMemo(() => {
+    let list = unpaidTransactions;
+
+    if (timePeriod !== 'all') {
+      const now = new Date();
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const sevenDaysAgo = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+      const startOfYear = new Date(now.getFullYear(), 0, 1).getTime();
+
+      list = list.filter((tx) => {
+        const t = new Date(tx.timestamp).getTime();
+        if (timePeriod === 'today') return t >= todayStart;
+        if (timePeriod === 'weekly') return t >= sevenDaysAgo;
+        if (timePeriod === 'monthly') return t >= startOfMonth;
+        if (timePeriod === 'yearly') return t >= startOfYear;
+        return true;
+      });
+    }
+
+    const q = searchQuery.toLowerCase().trim();
+    if (!q) return list;
+
+    return list.filter((tx) => {
+      return (
+        tx.customerName?.toLowerCase().includes(q) ||
+        tx.customerPhone?.toLowerCase().includes(q) ||
+        tx.notes?.toLowerCase().includes(q) ||
+        tx.id.toLowerCase().includes(q) ||
+        tx.employeeName.toLowerCase().includes(q)
+      );
+    });
+  }, [unpaidTransactions, timePeriod, searchQuery]);
+
+  // Grouped customer debts (Accounts)
+  const groupedAccounts = useMemo(() => {
+    const groups: Record<string, {
+      customerName: string;
+      customerPhone?: string;
+      transactions: Transaction[];
+      totalDebt: number;
+      lastActivity: string;
+    }> = {};
+
+    filteredUnpaid.forEach((tx) => {
+      const name = (tx.customerName || 'Walk-in Client').trim();
+      const key = name.toLowerCase();
+      
+      if (!groups[key]) {
+        groups[key] = {
+          customerName: name,
+          customerPhone: tx.customerPhone,
+          transactions: [],
+          totalDebt: 0,
+          lastActivity: tx.timestamp
+        };
+      }
+      
+      groups[key].transactions.push(tx);
+      groups[key].totalDebt += (tx.unpaidFeeAmount ?? tx.customerFee ?? 0);
+      
+      if (new Date(tx.timestamp).getTime() > new Date(groups[key].lastActivity).getTime()) {
+        groups[key].lastActivity = tx.timestamp;
+        if (tx.customerPhone) {
+          groups[key].customerPhone = tx.customerPhone;
+        }
+      }
+    });
+
+    return Object.values(groups).sort((a, b) => b.totalDebt - a.totalDebt);
+  }, [filteredUnpaid]);
+
+  // Settle single transaction charges - open editing modal
+  const handleSettleDebt = (tx: Transaction) => {
+    setSettlingTx(tx);
+  };
+
+  const [processingTxs, setProcessingTxs] = useState<Set<string>>(new Set());
+  const [approvedTxs, setApprovedTxs] = useState<Set<string>>(new Set());
+
+  // Manager approval & settlement lifecycle helpers
+  const handleApproveSettlement = async (tx: Transaction) => {
+    if (!tx.pendingSettlement || processingTxs.has(tx.id)) return;
+    setProcessingTxs(prev => new Set(prev).add(tx.id));
+    setApprovedTxs(prev => new Set(prev).add(tx.id));
+
+    if (onApproveTransaction) {
+      await onApproveTransaction(tx);
+    } else {
+      const p = tx.pendingSettlement;
+      const originalFee = (tx.originalFeeAmount !== undefined && tx.originalFeeAmount > 0) ? tx.originalFeeAmount : (tx.unpaidFeeAmount !== undefined && tx.unpaidFeeAmount > 0 ? tx.unpaidFeeAmount : tx.customerFee || 200);
+      const updatedPayments = [...(tx.chargePayments || []), p.proposedPaymentRecord];
+      const finalCustomerFee = p.proposedTotalPaidSoFar;
+      const updatedProfit = finalCustomerFee - tx.terminalFee - (tx.cbnCharge || 0);
+      const updatedTotalCustomerCharged = p.feeMethod === 'CardDebit' ? (tx.amount + finalCustomerFee) : tx.amount;
+
+      const updatedTx: Transaction = {
+        ...tx,
+        customerFee: finalCustomerFee,
+        profit: updatedProfit,
+        agentProfit: updatedProfit,
+        netProfit: updatedProfit,
+        totalCustomerCharged: updatedTotalCustomerCharged,
+        feeMethod: p.feeMethod || tx.feeMethod,
+        chargesStatus: p.proposedChargesStatus as any,
+        unpaidFeeAmount: p.proposedUnpaidAmount,
+        originalFeeAmount: originalFee,
+        chargesPaidAmount: p.proposedTotalPaidSoFar,
+        chargePayments: updatedPayments,
+        pendingSettlement: null,
+        lastSettlementBackup: p || null,
+        approvalStatus: 'approved',
+        status: 'Success',
+        approved: true,
+        approvedBy: currentUser?.id || 'manager',
+        approvedAt: new Date().toISOString()
+      };
+      await onUpdateTransaction(updatedTx);
+    }
+
+    setProcessingTxs(prev => {
+      const next = new Set(prev);
+      next.delete(tx.id);
+      return next;
+    });
+  };
+
+  const handleReverseSettlement = async (tx: Transaction) => {
+    if (processingTxs.has(tx.id)) return;
+    if (!confirm(`Are you sure you want to REVERSE & REVOKE the approved settlement for ${tx.customerName || 'Walk-in Client'}? This will re-open the debt for the cashier.`)) {
+      return;
+    }
+    setProcessingTxs(prev => new Set(prev).add(tx.id));
+    setApprovedTxs(prev => {
+      const next = new Set(prev);
+      next.delete(tx.id);
+      return next;
+    });
+
+    if (onReverseTransaction) {
+      await onReverseTransaction(tx);
+    } else {
+      const originalFee = (tx.originalFeeAmount !== undefined && tx.originalFeeAmount > 0) ? tx.originalFeeAmount : (tx.unpaidFeeAmount !== undefined && tx.unpaidFeeAmount > 0 ? tx.unpaidFeeAmount : tx.customerFee || 200);
+      const restoredSettlement = tx.lastSettlementBackup || tx.pendingSettlement;
+      const payments = tx.chargePayments || [];
+      const revertedPayments = payments.length > 0 ? payments.slice(0, -1) : [];
+      const revertedPaidAmount = revertedPayments.reduce((acc, curr) => acc + (curr.amount || 0), 0);
+
+      const reversedTx: Transaction = {
+        ...tx,
+        chargesStatus: revertedPaidAmount > 0 ? 'PartiallyPaid' : 'Unpaid',
+        unpaidFeeAmount: Math.max(0, originalFee - revertedPaidAmount),
+        chargesPaidAmount: revertedPaidAmount,
+        chargePayments: revertedPayments,
+        pendingSettlement: restoredSettlement ? {
+          ...restoredSettlement,
+          requestedAt: new Date().toISOString()
+        } : {
+          requestedBy: tx.cashierName || tx.employeeName || 'Cashier',
+          requestedById: tx.cashierId || tx.employeeId || 'cashier',
+          requestedAt: new Date().toISOString(),
+          feeMethod: tx.feeMethod || 'Cash',
+          paidAmount: originalFee,
+          note: 'Re-opened after manager settlement reversal',
+          proposedChargesStatus: 'Paid',
+          proposedUnpaidAmount: 0,
+          proposedTotalPaidSoFar: originalFee,
+          proposedPaymentRecord: {
+            id: `pay-${Date.now()}`,
+            date: new Date().toISOString(),
+            amount: originalFee,
+            collectorName: tx.cashierName || tx.employeeName || 'Cashier',
+            note: 'Re-opened settlement request'
+          }
+        },
+        approvalStatus: 'reversed',
+        approved: false,
+        approvedBy: undefined,
+        approvedAt: undefined
+      };
+      await onUpdateTransaction(reversedTx);
+    }
+
+    setProcessingTxs(prev => {
+      const next = new Set(prev);
+      next.delete(tx.id);
+      return next;
+    });
+  };
+
+  const handleRejectSettlement = async (tx: Transaction) => {
+    if (!tx.pendingSettlement || processingTxs.has(tx.id)) return;
+    setProcessingTxs(prev => new Set(prev).add(tx.id));
+    const reqBy = tx.pendingSettlement.requestedBy;
+    await onUpdateTransaction({
+      ...tx,
+      pendingSettlement: null
+    });
+    
+    setProcessingTxs(prev => {
+        const next = new Set(prev);
+        next.delete(tx.id);
+        return next;
+    });
+    alert(`Rejected debt settlement request submitted by Cashier ${reqBy}.`);
+  };
+
+  const handleApproveAllPending = async () => {
+    const pendingTxs = transactions.filter(t => !!t.pendingSettlement);
+    if (pendingTxs.length === 0) return;
+    if (confirm(`Are you sure you want to approve ALL ${pendingTxs.length} pending cashier debt settlements?`)) {
+      for (const tx of pendingTxs) {
+        await handleApproveSettlement(tx);
+      }
+    }
+  };
+
+  const pendingApprovalTxs = useMemo(() => transactions.filter(t => !!t.pendingSettlement && !processingTxs.has(t.id) && !approvedTxs.has(t.id) && t.approvalStatus !== 'approved' && !t.approved), [transactions, processingTxs, approvedTxs]);
+
+  // Quick Settle - Mark as Fully Paid directly with one click (great for managers)
+  const handleQuickMarkAsPaid = (tx: Transaction) => {
+    const remainingAmount = (tx.unpaidFeeAmount !== undefined && tx.unpaidFeeAmount > 0) ? tx.unpaidFeeAmount : (tx.customerFee || 200);
+    if (confirm(`Are you sure you want to mark this debt of ₦${remainingAmount.toLocaleString()} for ${tx.customerName || 'Walk-in Customer'} as FULLY PAID?`)) {
+      const originalFee = (tx.originalFeeAmount !== undefined && tx.originalFeeAmount > 0) ? tx.originalFeeAmount : (tx.unpaidFeeAmount !== undefined && tx.unpaidFeeAmount > 0 ? tx.unpaidFeeAmount : tx.customerFee || 200);
+      const prevPaid = tx.chargesPaidAmount || 0;
+      const totalPaidSoFar = prevPaid + remainingAmount;
+      
+      const newPaymentRecord = {
+        id: generateId(),
+        date: new Date().toISOString(),
+        amount: remainingAmount,
+        collectorName: currentUser?.name || 'Cashier',
+        note: 'Quick Settle (Mark as Paid Shortcut)'
+      };
+
+      const updatedPayments = [...(tx.chargePayments || []), newPaymentRecord];
+      const finalCustomerFee = totalPaidSoFar;
+      const updatedProfit = finalCustomerFee - tx.terminalFee - (tx.cbnCharge || 0);
+      const updatedTotalCustomerCharged = tx.feeMethod === 'CardDebit' ? (tx.amount + finalCustomerFee) : tx.amount;
+
+      if (currentUser?.role === 'Employee') {
+        onUpdateTransaction({
+          ...tx,
+          originalFeeAmount: originalFee,
+          pendingSettlement: {
+            requestedBy: currentUser.name,
+            requestedById: currentUser.id,
+            requestedAt: new Date().toISOString(),
+            feeMethod: tx.feeMethod || 'Cash',
+            paidAmount: remainingAmount,
+            note: 'Quick Settle by Cashier',
+            proposedChargesStatus: 'Paid',
+            proposedTotalPaidSoFar: totalPaidSoFar,
+            proposedPaymentRecord: newPaymentRecord
+          }
+        });
+        alert(`📢 Settlement request of ₦${remainingAmount.toLocaleString()} for ${tx.customerName || 'Customer'} submitted! Pending Manager approval.`);
+        return;
+      }
+
+      onUpdateTransaction({
+        ...tx,
+        customerFee: finalCustomerFee,
+        profit: updatedProfit,
+        totalCustomerCharged: updatedTotalCustomerCharged,
+        chargesStatus: 'Paid',
+        unpaidFeeAmount: undefined,
+        originalFeeAmount: originalFee,
+        chargesPaidAmount: totalPaidSoFar,
+        chargePayments: updatedPayments,
+        pendingSettlement: null
+      });
+
+      // Simple sound effect for professional feel
+      try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioContextClass) {
+          const ctx = new AudioContextClass();
+          const now = ctx.currentTime;
+          const osc1 = ctx.createOscillator();
+          const gain1 = ctx.createGain();
+          osc1.type = 'sine';
+          osc1.frequency.setValueAtTime(523.25, now); // C5
+          gain1.gain.setValueAtTime(0.12, now);
+          gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+          osc1.connect(gain1);
+          gain1.connect(ctx.destination);
+          osc1.start(now);
+          osc1.stop(now + 0.2);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+      
+      alert(`Successfully marked the debt as FULLY PAID for ${tx.customerName || 'Walk-in Customer'}!`);
+    }
+  };
+
+  // Settle all debts for a customer
+  const handleSettleAllForCustomer = (customerName: string) => {
+    const customerTxs = unpaidTransactions.filter(
+      tx => tx.customerName?.toLowerCase().trim() === customerName.toLowerCase().trim()
+    );
+
+    if (customerTxs.length === 0) return;
+
+    const totalDue = customerTxs.reduce((sum, t) => sum + (t.unpaidFeeAmount ?? t.customerFee ?? 0), 0);
+    const isEmployee = currentUser?.role === 'Employee';
+
+    if (confirm(`Mark all ${customerTxs.length} unpaid transaction charges (${formatNaira(totalDue)}) as Paid for ${customerName}?${isEmployee ? ' (Request will be sent for Manager Approval)' : ''}`)) {
+      customerTxs.forEach((tx) => {
+        const feeToSettle = tx.unpaidFeeAmount ?? tx.customerFee ?? 0;
+        const updatedProfit = feeToSettle - tx.terminalFee - (tx.cbnCharge || 0);
+        const updatedTotalCustomerCharged = tx.feeMethod === 'CardDebit' ? (tx.amount + feeToSettle) : tx.amount;
+        const prevPaid = tx.chargesPaidAmount || 0;
+        const totalPaidSoFar = prevPaid + feeToSettle;
+        const newPaymentRecord = {
+          id: generateId(),
+          date: new Date().toISOString(),
+          amount: feeToSettle,
+          collectorName: currentUser?.name || 'Cashier',
+          note: 'Full customer settlement'
+        };
+
+        if (isEmployee) {
+          onUpdateTransaction({
+            ...tx,
+            pendingSettlement: {
+              requestedBy: currentUser?.name || 'Cashier',
+              requestedById: currentUser?.id || 'cashier',
+              requestedAt: new Date().toISOString(),
+              feeMethod: tx.feeMethod || 'Cash',
+              paidAmount: feeToSettle,
+              note: `Customer Batch Settle by ${currentUser?.name || 'Cashier'}`,
+              proposedChargesStatus: 'Paid',
+              proposedTotalPaidSoFar: totalPaidSoFar,
+              proposedPaymentRecord: newPaymentRecord
+            }
+          });
+        } else {
+          onUpdateTransaction({
+            ...tx,
+            customerFee: feeToSettle,
+            profit: updatedProfit,
+            totalCustomerCharged: updatedTotalCustomerCharged,
+            chargesStatus: 'Paid',
+            unpaidFeeAmount: undefined,
+            chargesPaidAmount: totalPaidSoFar,
+            chargePayments: [...(tx.chargePayments || []), newPaymentRecord],
+            pendingSettlement: null
+          });
+        }
+      });
+
+      if (isEmployee) {
+        alert(`📢 Settlement requests submitted for ${customerName}! It is now pending Manager approval.`);
+      } else {
+        alert(`Successfully settled all outstanding charges for ${customerName}!`);
+      }
+    }
+  };
+
+  const [skippedTxIds, setSkippedTxIds] = useState<Set<string>>(new Set());
+
+  const handleSettlePortfolio = () => {
+    if (!editingCustomerName || portfolioTxs.length === 0) return;
+
+    const txsToSettle = portfolioTxs.filter(tx => !skippedTxIds.has(tx.id));
+    
+    if (txsToSettle.length === 0) {
+      alert('No transactions selected for settlement.');
+      return;
+    }
+
+    const totalPaidSum = txsToSettle.reduce((sum, tx) => sum + (tx.unpaidFeeAmount ?? tx.customerFee ?? 0), 0);
+    const isEmployee = currentUser?.role === 'Employee';
+
+    txsToSettle.forEach((tx) => {
+      const finalFee = tx.unpaidFeeAmount ?? tx.customerFee ?? 0;
+      const finalProfit = finalFee - tx.terminalFee - (tx.cbnCharge || 0);
+      const finalTotalCharged = tx.feeMethod === 'CardDebit' ? (tx.amount + finalFee) : tx.amount;
+      const prevPaid = tx.chargesPaidAmount || 0;
+      const totalPaidSoFar = prevPaid + finalFee;
+      const newPaymentRecord = {
+        id: generateId(),
+        date: new Date().toISOString(),
+        amount: finalFee,
+        collectorName: currentUser?.name || 'Cashier',
+        note: 'Portfolio ledger settlement'
+      };
+
+      if (isEmployee) {
+        onUpdateTransaction({
+          ...tx,
+          pendingSettlement: {
+            requestedBy: currentUser?.name || 'Cashier',
+            requestedById: currentUser?.id || 'cashier',
+            requestedAt: new Date().toISOString(),
+            feeMethod: tx.feeMethod || 'Cash',
+            paidAmount: finalFee,
+            note: `Ledger portfolio settlement by ${currentUser?.name || 'Cashier'}`,
+            proposedChargesStatus: 'Paid',
+            proposedTotalPaidSoFar: totalPaidSoFar,
+            proposedPaymentRecord: newPaymentRecord
+          }
+        });
+      } else {
+        onUpdateTransaction({
+          ...tx,
+          customerFee: finalFee,
+          profit: finalProfit,
+          totalCustomerCharged: finalTotalCharged,
+          chargesStatus: 'Paid',
+          unpaidFeeAmount: undefined,
+          chargesPaidAmount: totalPaidSoFar,
+          chargePayments: [...(tx.chargePayments || []), newPaymentRecord],
+          pendingSettlement: null
+        });
+      }
+    });
+
+    if (isEmployee) {
+      alert(`📢 Settlement requests submitted for ${txsToSettle.length} transactions for ${editingCustomerName}! Pending Manager approval.`);
+    } else {
+      // Success sound
+      try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioContextClass) {
+          const ctx = new AudioContextClass();
+          const now = ctx.currentTime;
+          const osc1 = ctx.createOscillator();
+          const gain1 = ctx.createGain();
+          osc1.type = 'sine';
+          osc1.frequency.setValueAtTime(523.25, now); // C5
+          gain1.gain.setValueAtTime(0.12, now);
+          gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+          osc1.connect(gain1);
+          gain1.connect(ctx.destination);
+          osc1.start(now);
+          osc1.stop(now + 0.15);
+
+          const osc2 = ctx.createOscillator();
+          const gain2 = ctx.createGain();
+          osc2.type = 'sine';
+          osc2.frequency.setValueAtTime(783.99, now + 0.1); // G5
+          gain2.gain.setValueAtTime(0.12, now + 0.1);
+          gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+          osc2.connect(gain2);
+          gain2.connect(ctx.destination);
+          osc2.start(now + 0.1);
+          osc2.stop(now + 0.35);
+        }
+      } catch (e) {}
+
+      alert(`Successfully saved and settled ${txsToSettle.length} outstanding transactions for ${editingCustomerName}! Settled charges total: ${formatNaira(totalPaidSum)}`);
+    }
+
+    setEditingCustomerName(null);
+    setSkippedTxIds(new Set());
+  };
+
+  const applyBulkFeeToPortfolio = () => {
+    const feeVal = parseFloat(bulkFeeInput);
+    if (isNaN(feeVal) || feeVal < 0) {
+      alert('Please enter a valid positive fee.');
+      return;
+    }
+    setPortfolioTxs((prev) => 
+      prev.map(tx => ({
+        ...tx,
+        unpaidFeeAmount: feeVal
+      }))
+    );
+    setBulkFeeInput('');
+  };
+
+  const handleAddTransactionToGroup = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingCustomerName) return;
+
+    const amountNum = parseFloat(newTxAmount);
+    if (isNaN(amountNum) || amountNum <= 0) {
+      alert('Please enter a valid positive amount.');
+      return;
+    }
+
+    let feeNum = parseFloat(newTxFee);
+    if (isNaN(feeNum) || feeNum < 0) {
+      feeNum = 0;
+    }
+
+    const financials = getCalculatedFinancials(amountNum, newTxType, newTxProvider, settings);
+    const terminalFee = financials.providerCharge;
+    const cbnCharge = financials.cbnCharge;
+    const id = generateId();
+
+    const newTx: Transaction = {
+      id,
+      employeeId: currentUser?.id || 'manual_added',
+      employeeName: currentUser?.name || 'Manual Admin',
+      type: newTxType,
+      provider: newTxProvider,
+      subType: 'OtherBank',
+      amount: amountNum,
+      customerFee: 0,
+      unpaidFeeAmount: feeNum,
+      terminalFee,
+      cbnCharge,
+      profit: feeNum - terminalFee - cbnCharge,
+      feeMethod: newTxFeeMethod,
+      totalCustomerCharged: newTxFeeMethod === 'CardDebit' ? (amountNum + feeNum) : amountNum,
+      timestamp: new Date().toISOString(),
+      notes: newTxNotes.trim() ? `[Group Added] ${newTxNotes}` : '[Group Added]',
+      customerPhone: groupedAccounts.find(g => g.customerName.toLowerCase() === editingCustomerName.toLowerCase())?.customerPhone,
+      status: 'Success',
+      chargesStatus: 'Unpaid',
+      customerName: editingCustomerName
+    };
+
+    if (onAddTransaction) {
+      onAddTransaction(newTx);
+    } else {
+      onUpdateTransaction(newTx);
+    }
+
+    setNewTxAmount('10000');
+    setNewTxFee('200');
+    setNewTxNotes('');
+    setShowAddTxForm(false);
+    
+    try {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioContextClass) {
+        const ctx = new AudioContextClass();
+        const now = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(587.33, now);
+        gain.gain.setValueAtTime(0.08, now);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now);
+        osc.stop(now + 0.15);
+      }
+    } catch (e) {}
+  };
+
+  // Generate friendly reminder message
+  const handleCopyReminder = (tx: Transaction) => {
+    const dateStr = new Date(tx.timestamp).toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric'
+    });
+    const feeToSettle = tx.unpaidFeeAmount ?? tx.customerFee ?? 0;
+    const businessName = "Dan Godal POS Hub";
+    const msg = `Hello ${tx.customerName || 'Customer'}, this is a friendly reminder from ${businessName} regarding your outstanding transaction fee of ${formatNaira(feeToSettle)} for your ${tx.type} transaction on ${dateStr}. Kindly drop it by the counter when you pass. Thank you!`;
+    
+    navigator.clipboard.writeText(msg);
+    setCopiedId(tx.id);
+    setTimeout(() => setCopiedId(null), 3000);
+  };
+
+  return (
+    <div id="unpaid-charges-ledger" className="bg-white border border-neutral-200 rounded-3xl p-5 space-y-5 shadow-sm">
+      {/* Header and Visual Warning alert */}
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-neutral-100 pb-4">
+        <div className="flex items-center gap-3">
+          <div className="p-3 bg-amber-50 text-amber-600 rounded-2xl animate-pulse">
+            <AlertTriangle className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="text-base font-extrabold text-neutral-800 tracking-tight flex items-center gap-2">
+              Outstanding Charges Reminders Hub
+              {stats.debtorCount > 0 && (
+                <span className="bg-red-100 text-red-700 text-[10px] font-mono font-black uppercase tracking-wider px-2 py-0.5 rounded-full select-none">
+                  ⚠️ Active Alerts
+                </span>
+              )}
+            </h3>
+            <p className="text-xs text-neutral-500 mt-0.5 font-medium">
+              Track and remind clients who defer paying transaction commissions.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      {/* Debt Alert Summary Card */}
+      {stats.debtorCount > 0 ? (
+        <div className="bg-gradient-to-r from-amber-500 to-orange-600 rounded-2xl p-5 text-white shadow-md relative overflow-hidden">
+          <div className="absolute -right-8 -bottom-8 w-32 h-32 bg-white/10 rounded-full blur-lg pointer-events-none" />
+          
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 relative z-10">
+            <div className="space-y-1">
+              <span className="text-[10px] text-orange-100 font-mono font-bold uppercase tracking-widest block">
+                Total Uncollected Commissions Debt
+              </span>
+              <h2 className="text-3xl font-black font-mono">
+                {formatNaira(stats.totalDebt)}
+              </h2>
+              <p className="text-xs text-orange-50 font-medium">
+                Accumulated from <strong className="font-extrabold">{stats.debtorCount}</strong> deferred transactions by <strong className="font-extrabold">{stats.uniqueDebtorsCount}</strong> customers.
+              </p>
+            </div>
+
+            <div className="bg-white/15 backdrop-blur-sm border border-white/10 p-3 rounded-xl text-xs space-y-1 w-full md:w-auto min-w-[200px]">
+              <span className="text-[9px] text-orange-200 font-mono uppercase block font-bold tracking-wider">Quick Action Notice:</span>
+              <p className="font-bold leading-normal">
+                Employees should kindly request these settled amounts whenever these clients visit today.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-emerald-50 border border-emerald-100 rounded-2xl p-4 flex items-center gap-3 text-xs">
+          <div className="w-8 h-8 bg-emerald-100 text-[#00B87A] rounded-full flex items-center justify-center font-bold font-mono">
+            ✓
+          </div>
+          <div className="space-y-0.5">
+            <span className="font-extrabold text-emerald-800 block">All Commissions Settled!</span>
+            <p className="text-emerald-600 font-semibold">
+              Great job! There are currently no outstanding unpaid transaction charges recorded.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Pending Manager Approval Section */}
+      {pendingApprovalTxs.length > 0 && (
+        <div className="bg-amber-500/10 border-2 border-amber-500/40 rounded-2xl p-4 sm:p-5 shadow-sm space-y-3">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-2 border-b border-amber-200/60">
+            <div className="flex items-center gap-2">
+              <span className="flex h-3 w-3 relative">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-500"></span>
+              </span>
+              <h4 className="text-sm font-black text-amber-900 uppercase tracking-tight flex items-center gap-2">
+                <span>⚡ Cashier Settlements Awaiting Manager Approval</span>
+                <span className="bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full text-xs font-mono font-bold">
+                  {pendingApprovalTxs.length}
+                </span>
+              </h4>
+            </div>
+            {currentUser?.role === 'Manager' && pendingApprovalTxs.length > 1 && (
+              <button
+                type="button"
+                onClick={handleApproveAllPending}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs px-3 py-1.5 rounded-xl font-mono uppercase transition cursor-pointer shadow-sm active:scale-95 flex items-center gap-1"
+              >
+                <Check className="w-3.5 h-3.5 stroke-[3]" />
+                <span>Approve All ({pendingApprovalTxs.length})</span>
+              </button>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {pendingApprovalTxs.map((tx) => {
+              const p = tx.pendingSettlement!;
+              return (
+                <div key={tx.id} className="bg-white border border-amber-200 rounded-xl p-3 shadow-xs space-y-2">
+                  <div className="flex justify-between items-start gap-2">
+                    <div>
+                      <span className="text-xs font-black text-neutral-850 block">
+                        {tx.customerName || 'Walk-in Client'}
+                      </span>
+                      <span className="text-[10px] text-neutral-500 block">
+                        Original Tx: {formatNaira(tx.amount)} ({tx.type})
+                      </span>
+                    </div>
+                    <span className="bg-amber-100 text-amber-900 text-[10px] font-mono font-bold px-2 py-0.5 rounded-md border border-amber-200">
+                      Settled: {formatNaira(p.paidAmount)} ({p.feeMethod || 'Cash'})
+                    </span>
+                  </div>
+
+                  <div className="text-[11px] text-neutral-600 space-y-0.5 bg-neutral-50 p-2 rounded-lg border border-neutral-100 font-mono">
+                    <div><strong className="text-neutral-800">Submitted by:</strong> {p.requestedBy}</div>
+                    <div><strong className="text-neutral-800">Note:</strong> {p.note || 'No note'}</div>
+                    <div><strong className="text-neutral-800">Target Status:</strong> <span className="text-emerald-700 font-bold">{p.proposedChargesStatus}</span></div>
+                  </div>
+
+                  {currentUser?.role === 'Manager' ? (
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        disabled={processingTxs.has(tx.id)}
+                        onClick={() => handleApproveSettlement(tx)}
+                        className={`flex-1 ${processingTxs.has(tx.id) ? 'bg-gray-400' : 'bg-emerald-600 hover:bg-emerald-700'} text-white text-xs font-black py-1.5 rounded-lg font-mono uppercase shadow-sm transition active:scale-95 cursor-pointer flex items-center justify-center gap-1`}
+                      >
+                        <Check className="w-3.5 h-3.5 stroke-[3]" /> {processingTxs.has(tx.id) ? 'Approving...' : 'Approve'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={processingTxs.has(tx.id)}
+                        onClick={() => handleRejectSettlement(tx)}
+                        className={`${processingTxs.has(tx.id) ? 'bg-gray-200 text-gray-500' : 'bg-red-100 hover:bg-red-200 text-red-700'} text-xs font-black px-3 py-1.5 rounded-lg font-mono uppercase transition active:scale-95 cursor-pointer`}
+                      >
+                        {processingTxs.has(tx.id) ? 'Processing...' : 'Reject'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-amber-800 bg-amber-100/80 px-2 py-1 rounded font-bold text-center font-mono">
+                      ⏳ Submitted by {p.requestedBy}. Awaiting Manager Approval.
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Total Debts Overview Categorized by Provider */}
+      {stats.debtorCount > 0 && (
+        <div id="total-debts-overview-card" className="border border-neutral-150 rounded-2xl p-4 bg-neutral-50/20 space-y-4 shadow-sm">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 bg-indigo-50 text-indigo-600 rounded-xl">
+              <PieChart className="w-4.5 h-4.5" />
+            </div>
+            <div>
+              <h4 className="text-xs font-black uppercase tracking-wider text-neutral-850 font-mono">
+                🏦 Total Debts Overview
+              </h4>
+              <p className="text-[10px] text-neutral-500 font-medium">
+                Consolidated outstanding client balances and transaction counts, categorized by POS provider.
+              </p>
+            </div>
+          </div>
+
+          {/* Dynamic Segmented Distribution Bar */}
+          <div className="space-y-1.5">
+            <div className="flex justify-between items-center text-[9px] text-neutral-400 font-mono font-bold uppercase tracking-wider">
+              <span>Debt Distribution Share</span>
+              <span>100% of outstanding</span>
+            </div>
+            <div className="w-full h-3 bg-neutral-100/70 rounded-full overflow-hidden flex border border-neutral-200/40 shadow-inner">
+              {providerDebtStats.map((item, index) => {
+                const styles = getProviderStyle(item.provider);
+                return (
+                  <div
+                    key={item.provider}
+                    style={{ width: `${item.percentage}%` }}
+                    className={`h-full ${styles.progress} transition-all duration-300 ${
+                      index > 0 ? 'border-l border-white/25' : ''
+                    }`}
+                    title={`${item.provider}: ${formatNaira(item.total)} (${item.percentage.toFixed(1)}%)`}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Responsive Provider Cards Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {providerDebtStats.map((item) => {
+              const styles = getProviderStyle(item.provider);
+              return (
+                <div 
+                  id={`provider-debt-${item.provider.toLowerCase()}`}
+                  key={item.provider}
+                  className="border border-neutral-200/50 p-3 rounded-xl transition duration-200 bg-white flex flex-col justify-between hover:shadow-md hover:border-neutral-300"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className={`text-[9px] font-black uppercase font-mono px-2 py-0.5 rounded-full border tracking-wide ${styles.badge}`}>
+                      {item.provider}
+                    </span>
+                    <span className="text-[9px] text-neutral-450 font-mono font-bold bg-neutral-100 px-1.5 py-0.5 rounded-md">
+                      {item.count} {item.count === 1 ? 'Tx' : 'Txs'}
+                    </span>
+                  </div>
+                  <div className="mt-3.5 flex justify-between items-baseline">
+                    <span className="text-sm font-black text-neutral-850 font-mono leading-none">
+                      {formatNaira(item.total)}
+                    </span>
+                    <span className="text-[9.5px] font-extrabold text-neutral-500 font-mono">
+                      {item.percentage.toFixed(1)}%
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Interactive Period Breakdown Grid/Tabs */}
+      {stats.debtorCount > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-black text-neutral-400 uppercase font-mono tracking-wider">
+              📊 Select Period to Filter List
+            </span>
+            {timePeriod !== 'all' && (
+              <button
+                type="button"
+                onClick={() => setTimePeriod('all')}
+                className="text-[10px] font-black text-amber-600 hover:text-amber-800 uppercase font-mono tracking-wider cursor-pointer flex items-center gap-1 active:scale-95 transition"
+              >
+                Reset Filter ×
+              </button>
+            )}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 select-none">
+            {/* All Debts Card */}
+            <button
+              type="button"
+              onClick={() => setTimePeriod('all')}
+              className={`p-3 rounded-xl border text-left transition duration-200 relative overflow-hidden cursor-pointer active:scale-[0.98] ${
+                timePeriod === 'all'
+                  ? 'bg-neutral-900 border-neutral-900 text-white shadow-md'
+                  : 'bg-neutral-50 hover:bg-neutral-100 border-neutral-200 text-neutral-800'
+              }`}
+            >
+              <div className="flex justify-between items-start">
+                <span className="text-[9px] font-mono font-bold uppercase tracking-wider block opacity-85 truncate">All Debts</span>
+                <span className={`text-[8.5px] font-black font-mono px-1.5 py-0.5 rounded-md ${timePeriod === 'all' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-700'}`}>
+                  {stats.debtorCount}
+                </span>
+              </div>
+              <div className="font-mono font-black text-sm mt-1.5 tracking-tight">
+                {formatNaira(stats.totalDebt)}
+              </div>
+            </button>
+
+            {/* Daily (Today) Card */}
+            <button
+              type="button"
+              onClick={() => setTimePeriod('today')}
+              className={`p-3 rounded-xl border text-left transition duration-200 relative overflow-hidden cursor-pointer active:scale-[0.98] ${
+                timePeriod === 'today'
+                  ? 'bg-[#00B87A] border-[#00B87A] text-white shadow-md ring-2 ring-emerald-500/20'
+                  : 'bg-neutral-50 hover:bg-neutral-100 border-neutral-200 text-neutral-800'
+              }`}
+            >
+              <div className="flex justify-between items-start">
+                <span className="text-[9px] font-mono font-bold uppercase tracking-wider block opacity-85 truncate">Daily (Today)</span>
+                <span className={`text-[8.5px] font-black font-mono px-1.5 py-0.5 rounded-md ${timePeriod === 'today' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-700'}`}>
+                  {timeStats.today.count}
+                </span>
+              </div>
+              <div className="font-mono font-black text-sm mt-1.5 tracking-tight">
+                {formatNaira(timeStats.today.sum)}
+              </div>
+            </button>
+
+            {/* Weekly Card */}
+            <button
+              type="button"
+              onClick={() => setTimePeriod('weekly')}
+              className={`p-3 rounded-xl border text-left transition duration-200 relative overflow-hidden cursor-pointer active:scale-[0.98] ${
+                timePeriod === 'weekly'
+                  ? 'bg-amber-500 border-amber-500 text-white shadow-md ring-2 ring-amber-500/20'
+                  : 'bg-neutral-50 hover:bg-neutral-100 border-neutral-200 text-neutral-800'
+              }`}
+            >
+              <div className="flex justify-between items-start">
+                <span className="text-[9px] font-mono font-bold uppercase tracking-wider block opacity-85 truncate">Weekly (7D)</span>
+                <span className={`text-[8.5px] font-black font-mono px-1.5 py-0.5 rounded-md ${timePeriod === 'weekly' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-700'}`}>
+                  {timeStats.weekly.count}
+                </span>
+              </div>
+              <div className="font-mono font-black text-sm mt-1.5 tracking-tight">
+                {formatNaira(timeStats.weekly.sum)}
+              </div>
+            </button>
+
+            {/* Monthly Card */}
+            <button
+              type="button"
+              onClick={() => setTimePeriod('monthly')}
+              className={`p-3 rounded-xl border text-left transition duration-200 relative overflow-hidden cursor-pointer active:scale-[0.98] ${
+                timePeriod === 'monthly'
+                  ? 'bg-orange-500 border-orange-500 text-white shadow-md ring-2 ring-orange-500/20'
+                  : 'bg-neutral-50 hover:bg-neutral-100 border-neutral-200 text-neutral-800'
+              }`}
+            >
+              <div className="flex justify-between items-start">
+                <span className="text-[9px] font-mono font-bold uppercase tracking-wider block opacity-85 truncate">Monthly (30D)</span>
+                <span className={`text-[8.5px] font-black font-mono px-1.5 py-0.5 rounded-md ${timePeriod === 'monthly' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-700'}`}>
+                  {timeStats.monthly.count}
+                </span>
+              </div>
+              <div className="font-mono font-black text-sm mt-1.5 tracking-tight">
+                {formatNaira(timeStats.monthly.sum)}
+              </div>
+            </button>
+
+            {/* Yearly Card */}
+            <button
+              type="button"
+              onClick={() => setTimePeriod('yearly')}
+              className={`p-3 rounded-xl border text-left transition duration-200 relative overflow-hidden cursor-pointer active:scale-[0.98] ${
+                timePeriod === 'yearly'
+                  ? 'bg-red-500 border-red-500 text-white shadow-md ring-2 ring-red-500/20'
+                  : 'bg-neutral-50 hover:bg-neutral-100 border-neutral-200 text-neutral-800'
+              }`}
+            >
+              <div className="flex justify-between items-start">
+                <span className="text-[9px] font-mono font-bold uppercase tracking-wider block opacity-85 truncate">Yearly (365D)</span>
+                <span className={`text-[8.5px] font-black font-mono px-1.5 py-0.5 rounded-md ${timePeriod === 'yearly' ? 'bg-white/20 text-white' : 'bg-neutral-200 text-neutral-700'}`}>
+                  {timeStats.yearly.count}
+                </span>
+              </div>
+              <div className="font-mono font-black text-sm mt-1.5 tracking-tight">
+                {formatNaira(timeStats.yearly.sum)}
+              </div>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Search and Filters */}
+      {(stats.debtorCount > 0 || allDebtPayments.length > 0) && (
+        <div className="space-y-4">
+          <div className="flex bg-neutral-100 p-1 rounded-xl">
+            <button
+              type="button"
+              onClick={() => setViewMode('grouped')}
+              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                viewMode === 'grouped'
+                  ? 'bg-white text-neutral-850 shadow-sm font-black'
+                  : 'text-neutral-500 hover:text-neutral-800'
+              }`}
+            >
+              <FolderOpen className="w-4 h-4 text-amber-500" />
+              <span>Gathered Accounts ({groupedAccounts.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('individual')}
+              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                viewMode === 'individual'
+                  ? 'bg-white text-neutral-850 shadow-sm font-black'
+                  : 'text-neutral-500 hover:text-neutral-800'
+              }`}
+            >
+              <ListFilter className="w-4 h-4 text-neutral-500" />
+              <span>Individual Debts ({filteredUnpaid.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('history')}
+              className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                viewMode === 'history'
+                  ? 'bg-white text-neutral-850 shadow-sm font-black'
+                  : 'text-neutral-500 hover:text-neutral-800'
+              }`}
+            >
+              <History className="w-4 h-4 text-emerald-600" />
+              <span>Debts History ({allDebtPayments.length})</span>
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between text-[11px] text-neutral-500 font-medium">
+            <span>
+              Showing <strong className="font-extrabold text-neutral-800 font-mono">
+                {viewMode === 'grouped' ? groupedAccounts.length : (viewMode === 'individual' ? filteredUnpaid.length : filteredHistory.length)}
+              </strong> {viewMode === 'grouped' ? 'gathered customer account' : (viewMode === 'individual' ? 'transaction' : 'settlement payment log')}{viewMode === 'grouped' ? (groupedAccounts.length === 1 ? '' : 's') : (viewMode === 'individual' ? (filteredUnpaid.length === 1 ? '' : 's') : (filteredHistory.length === 1 ? '' : 's'))}{' '}
+              {viewMode !== 'history' && timePeriod !== 'all' ? (
+                <span>for the <strong className="text-amber-600 capitalize">{timePeriod}</strong> period</span>
+              ) : (
+                'in total'
+              )}
+            </span>
+          </div>
+
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400 w-4 h-4" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full bg-neutral-50 border border-neutral-200 focus:border-amber-500 hover:border-neutral-300 focus:outline-none rounded-xl pl-9 pr-3 py-2.5 text-xs text-neutral-850 font-bold transition-all"
+              placeholder={
+                viewMode === 'grouped'
+                  ? "Search folders by Customer Name or Phone..."
+                  : viewMode === 'individual'
+                  ? "Search outstanding debts by Customer Name, Phone, or Employee..."
+                  : "Search payment logs by customer, collector, note, type..."
+              }
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-mono font-bold text-red-500 hover:text-red-700 cursor-pointer"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+
+          {viewMode === 'grouped' && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[420px] overflow-y-auto pr-1">
+              {groupedAccounts.map((account) => {
+                const types = Array.from(new Set(account.transactions.map(t => t.type)));
+
+                return (
+                  <div 
+                    key={account.customerName}
+                    className="flex flex-col justify-between p-4 bg-neutral-50 hover:bg-amber-50/20 border border-neutral-200 hover:border-amber-300 rounded-2xl transition duration-200 shadow-sm gap-3 group"
+                  >
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="w-10 h-10 bg-amber-500/10 text-amber-600 rounded-xl flex items-center justify-center shrink-0">
+                        <FolderOpen className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <span className="font-extrabold text-xs sm:text-sm text-neutral-850 block truncate">
+                          {account.customerName}
+                        </span>
+                        {account.customerPhone && (
+                          <span className="text-[10px] text-neutral-500 font-mono font-bold block mt-0.5">
+                            📞 {account.customerPhone}
+                          </span>
+                        )}
+                        <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                          <span className="bg-amber-100 text-amber-800 text-[8.5px] font-mono font-black uppercase px-2 py-0.5 rounded-md">
+                            {account.transactions.length} Debts
+                          </span>
+                          {types.map(t => (
+                            <span key={t} className="bg-neutral-200 text-neutral-700 text-[8.5px] font-bold px-1.5 py-0.5 rounded-md uppercase font-mono">
+                              {t}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between border-t border-neutral-200/60 pt-3 mt-1">
+                      <div>
+                        <span className="text-[8.5px] text-neutral-400 font-mono block uppercase">Total Balance</span>
+                        <span className="font-mono font-black text-amber-600 text-sm sm:text-base">
+                          {formatNaira(account.totalDebt)}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingCustomerName(account.customerName);
+                        }}
+                        className="px-3.5 py-2 bg-neutral-900 hover:bg-amber-600 text-white font-extrabold text-xs rounded-xl shadow-sm transition active:scale-95 flex items-center gap-1 cursor-pointer"
+                      >
+                        <span>Manage & Settle</span>
+                        <ChevronRight className="w-3.5 h-3.5 stroke-[3]" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {groupedAccounts.length === 0 && (
+                <div className="col-span-full text-center py-8 text-xs text-neutral-400 font-bold bg-neutral-50 border border-dashed rounded-2xl">
+                  No gathered customer accounts found.
+                </div>
+              )}
+            </div>
+          )}
+
+          {viewMode === 'individual' && (
+            /* Unpaid Debt List Rows */
+            <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1">
+              {filteredUnpaid.map((tx) => {
+                const txDate = new Date(tx.timestamp).toLocaleDateString(undefined, {
+                  month: 'short',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit'
+                });
+
+                return (
+                  <div 
+                    key={tx.id} 
+                    className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-3.5 bg-neutral-50 hover:bg-amber-50/20 border border-neutral-200 rounded-2xl transition duration-150 gap-4"
+                  >
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="w-9 h-9 bg-amber-100 text-amber-700 rounded-xl flex items-center justify-center shrink-0">
+                        <UserIcon className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-extrabold text-xs text-neutral-800">
+                            {tx.customerName || 'Unknown Customer'}
+                          </span>
+                          {tx.customerPhone && (
+                            <span className="text-[10px] text-neutral-500 font-mono font-bold">
+                              📞 {tx.customerPhone}
+                            </span>
+                          )}
+                          <span className="px-1.5 py-0.5 rounded-full text-[8px] uppercase font-bold bg-amber-100 text-amber-800 font-mono">
+                            {tx.type} ({tx.provider})
+                          </span>
+                          {tx.chargesStatus === 'PartiallyPaid' ? (
+                            <span className="px-1.5 py-0.5 rounded-full text-[8px] uppercase font-black bg-orange-100 text-orange-700 font-mono border border-orange-200">
+                              ⏳ Partially Paid: {formatNaira(tx.chargesPaidAmount || 0)} Paid
+                            </span>
+                          ) : (
+                            <span className={`px-1.5 py-0.5 rounded-full text-[8px] uppercase font-black font-mono border ${((new Date().getTime() - new Date(tx.timestamp).getTime()) > 172800000) ? 'bg-red-600 text-white animate-pulse' : 'bg-red-100 text-red-700'} border-red-200`}>
+                              {((new Date().getTime() - new Date(tx.timestamp).getTime()) > 172800000) ? '🚨 CRITICAL' : '🛑 No Payment Received'}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-2 text-[10px] text-neutral-400 font-mono mt-1 flex-wrap">
+                          <span>TXID: <strong className="text-neutral-500 font-black">{tx.id}</strong></span>
+                          <span>•</span>
+                          <span className="flex items-center gap-0.5"><Clock className="w-3 h-3" /> {txDate}</span>
+                          <span>•</span>
+                          <span className="bg-neutral-200/50 text-neutral-600 px-1.5 py-0.5 rounded-md text-[9px] font-bold">
+                            by Employee {tx.employeeName}
+                          </span>
+                        </div>
+                        
+                        {tx.notes && (
+                          <p className="text-[10px] text-neutral-500 italic mt-1 bg-white border border-neutral-100 p-1 px-2 rounded-lg truncate max-w-xs">
+                            📝 {tx.notes}
+                          </p>
+                        )}
+
+                        {tx.pendingSettlement && (
+                          <div className="mt-2 bg-amber-100/80 border border-amber-300 p-2 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs">
+                            <div>
+                              <span className="font-extrabold text-amber-900 block flex items-center gap-1">
+                                <Clock className="w-3.5 h-3.5 text-amber-700" /> Settlement Awaiting Approval
+                              </span>
+                              <span className="text-[10px] text-amber-800 font-mono block">
+                                {tx.pendingSettlement.requestedBy} recorded payment of {formatNaira(tx.pendingSettlement.paidAmount)} ({tx.pendingSettlement.feeMethod || 'Cash'})
+                              </span>
+                            </div>
+                            {currentUser?.role === 'Manager' ? (
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleApproveSettlement(tx)}
+                                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-black text-[10px] font-mono uppercase transition active:scale-95 cursor-pointer flex items-center gap-1 shadow-xs"
+                                >
+                                  <Check className="w-3 h-3 stroke-[3]" /> Approve
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRejectSettlement(tx)}
+                                  className="px-2.5 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg font-black text-[10px] font-mono uppercase transition active:scale-95 cursor-pointer"
+                                >
+                                  Reject
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="bg-amber-200 text-amber-900 text-[9px] font-mono font-bold px-2 py-0.5 rounded uppercase">
+                                Awaiting Manager Approval
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex sm:flex-col items-end justify-between w-full sm:w-auto shrink-0 gap-2 border-t sm:border-t-0 pt-2 sm:pt-0 border-neutral-200">
+                      <div className="text-right">
+                        <span className="text-[9px] text-neutral-400 font-mono block uppercase">Deferred Fee</span>
+                        <span className="font-mono font-black text-amber-600 text-sm">
+                          {formatNaira(tx.unpaidFeeAmount ?? tx.customerFee)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        {/* Remind Whatsapp/Sms */}
+                        <button
+                          type="button"
+                          onClick={() => handleCopyReminder(tx)}
+                          className={`p-1.5 rounded-lg border transition flex items-center justify-center gap-1 text-[11px] font-bold ${
+                            copiedId === tx.id
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-600'
+                              : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-500 hover:text-neutral-700'
+                          }`}
+                          title="Copy a beautiful, friendly reminder message to clipboard"
+                        >
+                          {copiedId === tx.id ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+                              <span>Copied Reminder!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3.5 h-3.5" />
+                              <span>Remind Copy</span>
+                            </>
+                          )}
+                        </button>
+
+                        {/* Adjust & Settle Button (Opens full edit overlay) */}
+                        <button
+                          type="button"
+                          onClick={() => handleSettleDebt(tx)}
+                          className="px-2.5 py-1.5 bg-neutral-150 hover:bg-neutral-200 text-neutral-700 border border-neutral-300 rounded-xl text-xs font-bold transition active:scale-95 flex items-center gap-1 cursor-pointer"
+                          title="Settle partial payments or edit fee details"
+                        >
+                          <span>Adjust & Settle</span>
+                        </button>
+
+                        {/* Quick Settle - Mark as Paid (Direct 1-click full settle) */}
+                        <button
+                          type="button"
+                          onClick={() => handleQuickMarkAsPaid(tx)}
+                          className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black transition active:scale-95 shadow-sm flex items-center gap-1 cursor-pointer hover:shadow"
+                          title="Mark full remaining amount as paid with one click"
+                        >
+                          <Check className="w-3.5 h-3.5 stroke-[3]" />
+                          <span>Mark as Paid</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {filteredUnpaid.length === 0 && (
+                <div className="text-center py-6 text-xs text-neutral-400 font-bold bg-neutral-50 border border-dashed rounded-2xl">
+                  No unpaid charges match your search query.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* New viewMode === 'history' tab section */}
+          {viewMode === 'history' && (
+            <div className="space-y-4">
+              {/* History Stats Bar */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="p-3.5 bg-emerald-50/40 border border-emerald-200/50 rounded-2xl">
+                  <span className="text-[9px] text-neutral-400 font-mono font-bold uppercase tracking-wider block">
+                    Total Recovered
+                  </span>
+                  <span className="text-base font-black text-emerald-600 font-mono leading-none block mt-1.5 font-mono">
+                    {formatNaira(historyStats.totalRecovered)}
+                  </span>
+                </div>
+                <div className="p-3.5 bg-neutral-50 border border-neutral-200/50 rounded-2xl">
+                  <span className="text-[9px] text-neutral-400 font-mono font-bold uppercase tracking-wider block">
+                    Settlements Count
+                  </span>
+                  <span className="text-base font-black text-neutral-850 font-mono leading-none block mt-1.5 font-mono">
+                    {historyStats.count} {historyStats.count === 1 ? 'Record' : 'Records'}
+                  </span>
+                </div>
+                <div className="p-3.5 bg-neutral-50 border border-neutral-200/50 rounded-2xl">
+                  <span className="text-[9px] text-neutral-400 font-mono font-bold uppercase tracking-wider block">
+                    Avg Settlement Size
+                  </span>
+                  <span className="text-base font-black text-neutral-850 font-mono leading-none block mt-1.5 font-mono">
+                    {formatNaira(historyStats.avgRecovery)}
+                  </span>
+                </div>
+                <div className="p-3.5 bg-neutral-50 border border-neutral-200/50 rounded-2xl">
+                  <span className="text-[9px] text-neutral-400 font-mono font-bold uppercase tracking-wider block">
+                    Unique Payees
+                  </span>
+                  <span className="text-base font-black text-neutral-850 font-mono leading-none block mt-1.5 font-mono">
+                    {historyStats.uniquePayeesCount} {historyStats.uniquePayeesCount === 1 ? 'Customer' : 'Customers'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Payments History List */}
+              <div className="space-y-2.5 max-h-[400px] overflow-y-auto pr-1">
+                {filteredHistory.map((item, index) => {
+                  const parentTx = transactions.find(t => t.id === item.txId);
+                  const pStyles = getProviderStyle(item.txProvider);
+                  const payDate = new Date(item.date).toLocaleString(undefined, {
+                    month: 'short',
+                    day: 'numeric',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  });
+
+                  return (
+                    <div
+                      key={item.paymentId || index}
+                      id={`debt-history-item-${item.paymentId}`}
+                      className="p-3.5 bg-white border border-neutral-200/80 hover:border-neutral-300 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 transition hover:shadow-sm"
+                    >
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-extrabold text-xs text-neutral-850">
+                            {item.customerName}
+                          </span>
+                          {item.customerPhone && (
+                            <span className="text-[10px] text-neutral-400 font-mono font-bold">
+                              📞 {item.customerPhone}
+                            </span>
+                          )}
+                          <span className={`text-[8.5px] font-mono font-black uppercase px-2 py-0.5 rounded-full border ${pStyles.badge}`}>
+                            {item.txProvider} {item.txType}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[10px] text-neutral-400 font-mono">
+                          <span>Paid: <strong className="text-emerald-600 font-black font-mono">{formatNaira(item.amount)}</strong></span>
+                          <span>•</span>
+                          <span>Collector: <strong className="text-neutral-700 font-bold">{item.collectorName}</strong></span>
+                          <span>•</span>
+                          <span>{payDate}</span>
+                        </div>
+                        {item.note && (
+                          <div className="text-[10px] text-neutral-500 italic flex items-start gap-1 bg-neutral-50 px-2 py-1 rounded-lg border border-neutral-100 max-w-full">
+                            <span>📝</span>
+                            <span className="truncate">{item.note}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="shrink-0 flex sm:flex-col items-end gap-1 text-right w-full sm:w-auto border-t sm:border-t-0 pt-2 sm:pt-0 border-neutral-100 justify-between">
+                        <div>
+                          <div className="text-[10px] text-neutral-400 font-mono">
+                            Tx Principal
+                          </div>
+                          <div className="font-mono font-extrabold text-neutral-800 text-xs font-mono">
+                            {formatNaira(item.txAmount)}
+                          </div>
+                        </div>
+
+                        {currentUser?.role === 'Manager' && parentTx && (
+                          <button
+                            type="button"
+                            disabled={processingTxs.has(parentTx.id)}
+                            onClick={() => handleReverseSettlement(parentTx)}
+                            className="mt-1 bg-amber-100 hover:bg-amber-200 text-amber-950 font-black text-[10px] px-2.5 py-1 rounded-lg uppercase tracking-wider font-mono transition cursor-pointer active:scale-95 flex items-center gap-1 border border-amber-300"
+                          >
+                            <span>↺ REVERSE</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {filteredHistory.length === 0 && (
+                  <div className="text-center py-10 text-xs text-neutral-400 font-bold bg-neutral-50 border border-dashed rounded-2xl">
+                    No matching payment logs found in debt history.
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Employee Settle Charges Overlay Modal */}
+      {settlingTx && (
+        <div className="fixed inset-0 bg-black/65 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in duration-200 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl space-y-5 relative border border-neutral-100 animate-in slide-in-from-bottom-4 duration-250">
+            {/* Close Button */}
+            <button
+              type="button"
+              onClick={() => setSettlingTx(null)}
+              className="absolute right-4.5 top-4.5 p-1.5 rounded-full bg-neutral-100 text-neutral-500 hover:text-neutral-800 transition cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            {/* Header */}
+            <div className="space-y-1 pr-6">
+              <span className="text-[10px] bg-emerald-100 text-emerald-800 font-mono font-black uppercase tracking-wider px-2 py-0.5 rounded-full">
+                Employee Terminal Settle
+              </span>
+              <h3 className="text-lg font-extrabold text-neutral-800 tracking-tight flex items-center gap-1.5 mt-1">
+                Settle Deferred Charges
+              </h3>
+              <p className="text-xs text-neutral-500">
+                Edit and add the exact charges before marking the transaction commission as successful.
+              </p>
+            </div>
+
+            {/* Debtor Snapshot Panel */}
+            <div className="bg-neutral-50 border border-neutral-200/60 p-3.5 rounded-2xl space-y-2.5 text-xs text-neutral-700 font-medium">
+              <div className="flex justify-between items-center border-b border-neutral-200/50 pb-2">
+                <span className="text-neutral-400 uppercase font-mono text-[9px] font-bold">Client / Debtor</span>
+                <span className="font-extrabold text-neutral-800">{settlingTx.customerName || 'Walk-in Client'}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div>
+                  <span className="text-neutral-400 uppercase font-mono text-[8px] block font-bold">Transaction Type</span>
+                  <span className="font-bold text-neutral-850">{settlingTx.type} ({settlingTx.provider})</span>
+                </div>
+                <div>
+                  <span className="text-neutral-400 uppercase font-mono text-[8px] block font-bold">Transaction Amount</span>
+                  <span className="font-bold text-neutral-850 font-mono">{formatNaira(settlingTx.amount)}</span>
+                </div>
+              </div>
+              <div className="text-[10px] text-neutral-400 font-mono pt-1">
+                Originally processed by employee <strong>{settlingTx.employeeName}</strong>
+              </div>
+            </div>
+
+            {/* Edit Settle Fee Field */}
+            <div className="space-y-4">
+              {/* Prior Payment History of this transaction if any exists */}
+              {settlingTx.chargePayments && settlingTx.chargePayments.length > 0 && (
+                <div className="bg-neutral-50/50 border border-neutral-150 p-3 rounded-2xl space-y-2">
+                  <span className="text-[9px] text-neutral-400 font-mono font-bold uppercase tracking-wider block">
+                    📊 Prior Partial Payments Logs
+                  </span>
+                  <div className="space-y-1.5 max-h-[120px] overflow-y-auto pr-1">
+                    {settlingTx.chargePayments.map((pay, pIdx) => (
+                      <div key={pay.id || pIdx} className="flex justify-between items-center bg-white p-2 rounded-xl border border-neutral-150 text-xs">
+                        <div className="flex flex-col">
+                          <span className="font-extrabold text-neutral-800">{formatNaira(pay.amount)}</span>
+                          <span className="text-[9px] text-neutral-400 font-mono">
+                            {new Date(pay.date).toLocaleString()} ({pay.collectorName})
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-neutral-500 font-medium italic bg-neutral-100 px-2 py-0.5 rounded-lg truncate max-w-[130px]">
+                          {pay.note || 'Partial pay'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="text-[10px] text-neutral-500 font-medium font-mono text-right">
+                    Total Paid So Far: <strong className="text-emerald-600 font-black">{formatNaira(settlingTx.chargesPaidAmount || 0)}</strong>
+                  </div>
+                </div>
+              )}
+
+              {/* Detailed Financial Summary & Balances */}
+              {(() => {
+                const totalTarget = parseFloat(settleFeeInput) || 0;
+                const paidAmt = parseFloat(settleAmountPaid) || 0;
+                const prevPaid = settlingTx.chargesPaidAmount || 0;
+                const remainingUnpaid = Math.max(0, totalTarget - prevPaid);
+                const finalOutstanding = Math.max(0, remainingUnpaid - paidAmt);
+                const isCompleted = finalOutstanding <= 0.01;
+
+                return (
+                  <div className="space-y-4">
+                    {/* Visual Progress / Metrics Card deck */}
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="bg-neutral-50 border border-neutral-200/50 p-2.5 rounded-xl shadow-inner">
+                        <span className="text-[9px] text-neutral-400 font-mono uppercase font-bold block">Total Fee</span>
+                        <span className="text-sm font-black text-neutral-800 font-mono">{formatNaira(totalTarget)}</span>
+                      </div>
+                      <div className="bg-neutral-50 border border-neutral-200/50 p-2.5 rounded-xl shadow-inner">
+                        <span className="text-[9px] text-neutral-400 font-mono uppercase font-bold block">Prior Paid</span>
+                        <span className="text-sm font-black text-emerald-600 font-mono">{formatNaira(prevPaid)}</span>
+                      </div>
+                      <div className="bg-neutral-50 border border-neutral-200/50 p-2.5 rounded-xl shadow-inner">
+                        <span className="text-[9px] text-neutral-400 font-mono uppercase font-bold block">Current Debt</span>
+                        <span className="text-sm font-black text-red-600 font-mono">{formatNaira(remainingUnpaid)}</span>
+                      </div>
+                    </div>
+
+                    {/* Progress Bar visual indicator */}
+                    <div className="w-full h-2.5 bg-neutral-100 rounded-full overflow-hidden flex border border-neutral-200/40">
+                      {totalTarget > 0 && (
+                        <>
+                          <div 
+                            style={{ width: `${(prevPaid / totalTarget) * 100}%` }} 
+                            className="h-full bg-emerald-500" 
+                            title={`Paid previously: ${formatNaira(prevPaid)}`}
+                          />
+                          <div 
+                            style={{ width: `${(Math.min(remainingUnpaid, paidAmt) / totalTarget) * 100}%` }} 
+                            className="h-full bg-emerald-400 animate-pulse border-l border-white/20" 
+                            title={`Paying now: ${formatNaira(paidAmt)}`}
+                          />
+                          <div 
+                            style={{ width: `${(finalOutstanding / totalTarget) * 100}%` }} 
+                            className="h-full bg-red-100 border-l border-white/20" 
+                            title={`Outstanding remaining: ${formatNaira(finalOutstanding)}`}
+                          />
+                        </>
+                      )}
+                    </div>
+
+                    <div className="space-y-3.5">
+                      {/* Amount Paid Today */}
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between items-center">
+                          <label htmlFor="settle-amount-paid-input" className="block text-xs font-bold uppercase tracking-wider text-neutral-800 font-mono">
+                            💵 Amount Paid Today (₦)
+                          </label>
+                          <span className="text-[10px] text-neutral-400 font-mono font-medium">
+                            Max Allowed: {formatNaira(remainingUnpaid)}
+                          </span>
+                        </div>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-500 font-mono text-xs">₦</span>
+                          <input
+                            id="settle-amount-paid-input"
+                            type="number"
+                            value={settleAmountPaid === '0' ? '' : settleAmountPaid}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setSettleAmountPaid(val);
+                            }}
+                            className="w-full bg-white border-2 border-emerald-500 focus:border-emerald-600 rounded-xl pl-7 pr-3 py-2 text-neutral-850 font-mono text-sm font-black focus:outline-none focus:ring-2 focus:ring-emerald-500/10 transition-all"
+                            placeholder="Enter amount customer is paying now"
+                            max={remainingUnpaid || undefined}
+                          />
+                        </div>
+
+                        {/* Quick Presets Buttons */}
+                        {remainingUnpaid > 0 && (
+                          <div className="flex flex-wrap gap-1.5 pt-1">
+                            <button
+                              type="button"
+                              onClick={() => setSettleAmountPaid(Math.round(remainingUnpaid * 0.25).toString())}
+                              className="px-2.5 py-1 text-[10px] font-bold font-mono bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-lg cursor-pointer transition active:scale-95"
+                            >
+                              25% ({formatNaira(Math.round(remainingUnpaid * 0.25))})
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSettleAmountPaid(Math.round(remainingUnpaid * 0.50).toString())}
+                              className="px-2.5 py-1 text-[10px] font-bold font-mono bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-lg cursor-pointer transition active:scale-95"
+                            >
+                              50% ({formatNaira(Math.round(remainingUnpaid * 0.50))})
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSettleAmountPaid(Math.round(remainingUnpaid * 0.75).toString())}
+                              className="px-2.5 py-1 text-[10px] font-bold font-mono bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-lg cursor-pointer transition active:scale-95"
+                            >
+                              75% ({formatNaira(Math.round(remainingUnpaid * 0.75))})
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSettleAmountPaid(remainingUnpaid.toString())}
+                              className="px-2.5 py-1 text-[10px] font-black font-mono bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-lg cursor-pointer transition active:scale-95 border border-emerald-200/50"
+                            >
+                              100% Full Pay ({formatNaira(remainingUnpaid)})
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Advanced Accordion: Adjust Original Fee Target */}
+                      <details className="group border border-neutral-150 rounded-2xl bg-neutral-50/30 overflow-hidden transition-all duration-200">
+                        <summary className="px-3.5 py-2.5 text-[11px] font-bold text-neutral-500 uppercase tracking-wider font-mono flex justify-between items-center cursor-pointer select-none hover:bg-neutral-50 transition">
+                          <span>⚙️ Adjust Original Fee Target</span>
+                          <span className="transition-transform group-open:rotate-180 text-xs text-neutral-400">&darr;</span>
+                        </summary>
+                        <div className="p-3.5 bg-white border-t border-neutral-150 space-y-2">
+                          <p className="text-[10px] text-neutral-400 leading-relaxed">
+                            Use this only if you need to increase or decrease the total commission fee itself (e.g. waiving parts of it or charging extra).
+                          </p>
+                          <div className="relative">
+                            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400 font-mono text-xs">₦</span>
+                            <input
+                              id="settle-fee-input"
+                              type="number"
+                              value={settleFeeInput}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setSettleFeeInput(val);
+                                // Set payment today to be the new remaining balance
+                                const newRemaining = Math.max(0, (parseFloat(val) || 0) - prevPaid);
+                                setSettleAmountPaid(newRemaining.toString());
+                              }}
+                              className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-7 pr-3 py-2 text-neutral-800 font-mono text-xs font-bold focus:outline-none"
+                              placeholder="Original total fee"
+                            />
+                          </div>
+                        </div>
+                      </details>
+
+                      {/* Outcome Announcement Card */}
+                      <div className={`p-3 rounded-2xl border text-xs space-y-1 ${
+                        isCompleted
+                          ? 'bg-emerald-50 border-emerald-200/70 text-emerald-800'
+                          : 'bg-amber-50 border-amber-200/70 text-amber-800'
+                      }`}>
+                        <div className="flex justify-between items-center font-bold">
+                          <span>Settle Outcome Preview:</span>
+                          <span className="font-mono text-[11px] font-extrabold uppercase">
+                            {isCompleted ? '🎉 FULLY CLEARED' : '🛑 PARTIALLY PAID'}
+                          </span>
+                        </div>
+                        <p className="text-[10px] leading-relaxed opacity-90">
+                          {isCompleted ? (
+                            `The customer is paying ${formatNaira(paidAmt)}. This transaction's debt of ${formatNaira(remainingUnpaid)} will be fully paid with 0 balance.`
+                          ) : (
+                            `The customer is paying ${formatNaira(paidAmt)}. A remaining debt of ${formatNaira(finalOutstanding)} will remain active on their account.`
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                {/* Custom Payment Date */}
+                <div className="space-y-1.5">
+                  <label htmlFor="settle-payment-date" className="block text-xs font-bold uppercase tracking-wider text-neutral-450 font-mono">
+                    📅 Date & Time Paid (Exactly)
+                  </label>
+                  <input
+                    id="settle-payment-date"
+                    type="datetime-local"
+                    value={settlePaymentDate}
+                    onChange={(e) => setSettlePaymentDate(e.target.value)}
+                    className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-neutral-850 font-mono text-xs font-medium focus:outline-none"
+                  />
+                </div>
+
+                {/* Custom Payment Notes */}
+                <div className="space-y-1.5">
+                  <label htmlFor="settle-payment-note" className="block text-xs font-bold uppercase tracking-wider text-neutral-450 font-mono">
+                    📝 Payment Note
+                  </label>
+                  <input
+                    id="settle-payment-note"
+                    type="text"
+                    value={settlePaymentNote}
+                    onChange={(e) => setSettlePaymentNote(e.target.value)}
+                    className="w-full bg-white border border-neutral-200 rounded-xl px-3 py-2 text-neutral-800 text-xs font-medium focus:outline-none"
+                    placeholder="e.g. Paid cash balance, or Part payment"
+                  />
+                </div>
+              </div>
+
+              {/* Fee Method Toggle option */}
+              <div className="space-y-1.5">
+                <span className="block text-[10px] font-bold uppercase tracking-wider text-neutral-400 font-mono">
+                  Collection Method
+                </span>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSettleFeeMethod('Cash')}
+                    className={`py-2 px-1 rounded-xl text-[10px] font-bold border transition cursor-pointer text-center uppercase font-mono ${
+                      settleFeeMethod === 'Cash'
+                        ? 'bg-neutral-800 border-neutral-800 text-white font-black'
+                        : 'bg-white border-neutral-200 text-neutral-500 hover:text-neutral-700'
+                    }`}
+                  >
+                    💵 Cash Collection
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSettleFeeMethod('CardDebit')}
+                    className={`py-2 px-1 rounded-xl text-[10px] font-bold border transition cursor-pointer text-center uppercase font-mono ${
+                      settleFeeMethod === 'CardDebit'
+                        ? 'bg-neutral-800 border-neutral-800 text-white font-black'
+                        : 'bg-white border-neutral-200 text-neutral-500 hover:text-neutral-700'
+                    }`}
+                  >
+                    💳 Card Add-on (Bill Fee)
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Calculations and Profits Preview */}
+            <div className="bg-emerald-50/50 border border-emerald-100 p-4 rounded-2xl space-y-2.5">
+              <span className="text-[9px] text-emerald-800 font-mono font-black uppercase tracking-wider block">
+                🔴 Live Settle Impact Summary
+              </span>
+              <div className="space-y-1.5 text-xs text-neutral-600 font-medium">
+                <div className="flex justify-between">
+                  <span>Manager Settle Fee Amount:</span>
+                  <span className="font-mono font-bold text-neutral-800">{formatNaira(parseFloat(settleFeeInput) || 0)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Terminal Base Commission:</span>
+                  <span className="font-mono text-neutral-500">-{formatNaira(settlingTx.terminalFee)}</span>
+                </div>
+                {settlingTx.cbnCharge ? (
+                  <div className="flex justify-between">
+                    <span>CBN Duty:</span>
+                    <span className="font-mono text-neutral-500">-{formatNaira(settlingTx.cbnCharge)}</span>
+                  </div>
+                ) : null}
+                <div className="flex justify-between border-t border-neutral-200/50 pt-2 text-sm font-black">
+                  <span className="text-emerald-850">Net Commission Profit:</span>
+                  <span className="font-mono text-emerald-700">
+                    {formatNaira((parseFloat(settleFeeInput) || 0) - settlingTx.terminalFee - (settlingTx.cbnCharge || 0))}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Confirm Actions */}
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => setSettlingTx(null)}
+                className="w-full py-2.5 px-4 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-bold rounded-xl text-xs transition cursor-pointer font-mono uppercase"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const adjustedTotalTarget = parseFloat(settleFeeInput) || 0;
+                  const currentPayment = parseFloat(settleAmountPaid) || 0;
+                  
+                  const originalFee = (settlingTx.originalFeeAmount !== undefined && settlingTx.originalFeeAmount > 0) ? settlingTx.originalFeeAmount : (settlingTx.unpaidFeeAmount !== undefined && settlingTx.unpaidFeeAmount > 0 ? settlingTx.unpaidFeeAmount : settlingTx.customerFee || 200);
+                  const prevPaid = settlingTx.chargesPaidAmount || 0;
+                  const totalPaidSoFar = prevPaid + currentPayment;
+                  
+                  const remainingOutstanding = Math.max(0, adjustedTotalTarget - totalPaidSoFar);
+                  const isFullyCompleted = remainingOutstanding <= 0.01;
+
+                  const newPaymentRecord = {
+                    id: generateId(),
+                    date: settlePaymentDate ? new Date(settlePaymentDate).toISOString() : new Date().toISOString(),
+                    amount: currentPayment,
+                    collectorName: currentUser?.name || 'Cashier',
+                    note: settlePaymentNote.trim() || 'Partial payment'
+                  };
+
+                  const updatedPayments = [...(settlingTx.chargePayments || []), newPaymentRecord];
+
+                  const finalCustomerFee = totalPaidSoFar;
+                  const updatedProfit = finalCustomerFee - settlingTx.terminalFee - (settlingTx.cbnCharge || 0);
+                  const updatedTotalCustomerCharged = settleFeeMethod === 'CardDebit' ? (settlingTx.amount + finalCustomerFee) : settlingTx.amount;
+
+                  if (currentUser?.role === 'Employee') {
+                    onUpdateTransaction({
+                      ...settlingTx,
+                      originalFeeAmount: originalFee,
+                      pendingSettlement: {
+                        requestedBy: currentUser.name,
+                        requestedById: currentUser.id,
+                        requestedAt: new Date().toISOString(),
+                        feeMethod: settleFeeMethod,
+                        paidAmount: currentPayment,
+                        note: settlePaymentNote.trim() || 'Payment by Cashier',
+                        proposedChargesStatus: isFullyCompleted ? 'Paid' : 'PartiallyPaid',
+                        proposedUnpaidAmount: isFullyCompleted ? undefined : remainingOutstanding,
+                        proposedTotalPaidSoFar: totalPaidSoFar,
+                        proposedPaymentRecord: newPaymentRecord
+                      }
+                    });
+                    alert(`📢 Recorded settlement payment of ${formatNaira(currentPayment)} for ${settlingTx.customerName || 'Customer'}! Pending Manager approval.`);
+                    setSettlingTx(null);
+                    return;
+                  }
+
+                  onUpdateTransaction({
+                    ...settlingTx,
+                    customerFee: finalCustomerFee,
+                    profit: updatedProfit,
+                    totalCustomerCharged: updatedTotalCustomerCharged,
+                    feeMethod: settleFeeMethod,
+                    chargesStatus: isFullyCompleted ? 'Paid' : 'PartiallyPaid',
+                    unpaidFeeAmount: isFullyCompleted ? undefined : remainingOutstanding,
+                    originalFeeAmount: originalFee,
+                    chargesPaidAmount: totalPaidSoFar,
+                    chargePayments: updatedPayments,
+                    pendingSettlement: null
+                  });
+
+                  // Simple Web Audio API feedback
+                  try {
+                    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+                    if (AudioContextClass) {
+                      const ctx = new AudioContextClass();
+                      const now = ctx.currentTime;
+                      const osc = ctx.createOscillator();
+                      const gain = ctx.createGain();
+                      osc.type = 'sine';
+                      osc.frequency.setValueAtTime(523.25, now);
+                      gain.gain.setValueAtTime(0.12, now);
+                      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+                      osc.connect(gain);
+                      gain.connect(ctx.destination);
+                      osc.start(now);
+                      osc.stop(now + 0.15);
+                    }
+                  } catch (e) {}
+
+                  setSettlingTx(null);
+                }}
+                className="w-full py-2.5 px-4 bg-[#00B87A] hover:bg-emerald-600 text-white font-black rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-1 font-mono uppercase shadow-md active:scale-95"
+              >
+                ✓ Save & Settle
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Grouped Account Portfolio Settle Modal */}
+      {editingCustomerName && (
+        <div className="fixed inset-0 bg-black/65 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in duration-200 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-2xl w-full max-h-[92vh] overflow-y-auto p-6 shadow-2xl space-y-6 relative border border-neutral-100 animate-in slide-in-from-bottom-4 duration-250">
+            {/* Close Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setEditingCustomerName(null);
+                setSkippedTxIds(new Set());
+              }}
+              className="absolute right-4.5 top-4.5 p-1.5 rounded-full bg-neutral-100 text-neutral-500 hover:text-neutral-800 transition cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            {/* Header */}
+            <div className="space-y-1 pr-6">
+              <span className="text-[10px] bg-amber-100 text-amber-800 font-mono font-black uppercase tracking-wider px-2 py-0.5 rounded-full">
+                Gathered Customer Ledger
+              </span>
+              <h3 className="text-xl font-extrabold text-neutral-800 tracking-tight flex items-center gap-1.5 mt-1">
+                Account: {editingCustomerName}
+              </h3>
+              <p className="text-xs text-neutral-500">
+                Manage, edit, or add withdrawal, transfer, and deposit transactions to gather his whole week or monthly activities, then settle them altogether.
+              </p>
+            </div>
+
+            {/* Quick Bulk Adjustment Fee */}
+            <div className="p-3.5 bg-neutral-50 border border-neutral-200 rounded-2xl space-y-2">
+              <span className="text-[10px] text-neutral-500 font-mono font-bold uppercase tracking-wider block">
+                ⚡ Quick Bulk Fee Adjustment
+              </span>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400 font-mono text-xs">₦</span>
+                  <input
+                    type="number"
+                    value={bulkFeeInput}
+                    onChange={(e) => setBulkFeeInput(e.target.value)}
+                    className="w-full bg-white border border-neutral-200 rounded-lg pl-6 pr-3 py-1.5 text-xs text-neutral-850 font-mono focus:outline-none"
+                    placeholder="E.g. 200"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={applyBulkFeeToPortfolio}
+                  className="px-4 py-1.5 bg-neutral-800 hover:bg-neutral-900 text-white font-bold text-xs rounded-lg transition cursor-pointer"
+                >
+                  Apply to All
+                </button>
+              </div>
+            </div>
+
+            {/* Expandable Add New Transaction Form inside Account Portfolio */}
+            <div className="border border-neutral-200 rounded-2xl overflow-hidden bg-neutral-50/40">
+              <button
+                type="button"
+                onClick={() => setShowAddTxForm(!showAddTxForm)}
+                className="w-full px-4 py-3 bg-neutral-50 border-b border-neutral-200/60 flex justify-between items-center text-xs font-bold text-neutral-800 hover:bg-neutral-100 transition cursor-pointer"
+              >
+                <span className="flex items-center gap-1.5">
+                  <Plus className="w-4 h-4 text-emerald-500 stroke-[3]" />
+                  Add New Deferred Transaction to this Account
+                </span>
+                <span className="text-[10px] font-mono text-neutral-400 font-medium">
+                  {showAddTxForm ? 'Collapse [−]' : 'Expand [+]'}
+                </span>
+              </button>
+
+              {showAddTxForm && (
+                <form onSubmit={handleAddTransactionToGroup} className="p-4 space-y-3.5 bg-white border-t border-neutral-100 animate-in fade-in duration-150">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {/* Type Selector */}
+                    <div className="space-y-1">
+                      <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider">Type</label>
+                      <select
+                        value={newTxType}
+                        onChange={(e) => setNewTxType(e.target.value as any)}
+                        className="w-full bg-neutral-50 border border-neutral-200 rounded-lg p-2 text-xs font-bold focus:outline-none focus:border-amber-500"
+                      >
+                        <option value="Withdrawal">Withdraw</option>
+                        <option value="Transfer">Transfer</option>
+                        <option value="Deposit">Money Receive</option>
+                      </select>
+                    </div>
+
+                    {/* Provider Selector */}
+                    <div className="space-y-1">
+                      <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider">Terminal Provider</label>
+                      <select
+                        value={newTxProvider}
+                        onChange={(e) => setNewTxProvider(e.target.value as any)}
+                        className="w-full bg-neutral-50 border border-neutral-200 rounded-lg p-2 text-xs font-bold focus:outline-none focus:border-amber-500"
+                      >
+                        <option value="OPay">OPay</option>
+                        <option value="Moniepoint">Moniepoint</option>
+                        <option value="PalmPay">PalmPay</option>
+                      </select>
+                    </div>
+
+                    {/* Fee Method */}
+                    <div className="space-y-1">
+                      <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider">Fee Method</label>
+                      <select
+                        value={newTxFeeMethod}
+                        onChange={(e) => setNewTxFeeMethod(e.target.value as any)}
+                        className="w-full bg-neutral-50 border border-neutral-200 rounded-lg p-2 text-xs font-bold focus:outline-none focus:border-amber-500"
+                      >
+                        <option value="Cash">Cash Collection</option>
+                        <option value="CardDebit">Card Add-on</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {/* Amount */}
+                    <div className="space-y-1">
+                      <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider">Transaction Amount (₦)</label>
+                      <input
+                        type="number"
+                        value={newTxAmount}
+                        onChange={(e) => setNewTxAmount(e.target.value)}
+                        className="w-full bg-neutral-50 border border-neutral-200 rounded-lg p-2 text-xs font-mono font-bold focus:outline-none focus:border-amber-500"
+                        placeholder="10000"
+                        required
+                      />
+                    </div>
+
+                    {/* Deferred Fee */}
+                    <div className="space-y-1">
+                      <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider">Unpaid Fee (₦)</label>
+                      <input
+                        type="number"
+                        value={newTxFee}
+                        onChange={(e) => setNewTxFee(e.target.value)}
+                        className="w-full bg-neutral-50 border border-neutral-200 rounded-lg p-2 text-xs font-mono font-bold focus:outline-none focus:border-amber-500"
+                        placeholder="200"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Notes */}
+                  <div className="space-y-1">
+                    <label className="block text-[10px] font-bold text-neutral-500 uppercase tracking-wider">Internal Notes</label>
+                    <input
+                      type="text"
+                      value={newTxNotes}
+                      onChange={(e) => setNewTxNotes(e.target.value)}
+                      className="w-full bg-neutral-50 border border-neutral-200 rounded-lg p-2 text-xs font-bold focus:outline-none focus:border-amber-500"
+                      placeholder="e.g. customer skipped daily charges, will pay weekend"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-1 border-t border-neutral-100 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowAddTxForm(false)}
+                      className="px-3 py-1.5 bg-neutral-100 text-neutral-600 rounded-lg text-xs font-bold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white font-bold rounded-lg text-xs transition cursor-pointer"
+                    >
+                      ➕ Record & Add
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+
+            {/* List of Portfolio Transactions */}
+            <div className="space-y-3">
+              <span className="text-[10px] text-neutral-400 font-mono font-black uppercase tracking-wider block">
+                Deferred Transactions List ({portfolioTxs.length})
+              </span>
+              
+              <div className="space-y-2.5 max-h-[250px] overflow-y-auto pr-1">
+                {portfolioTxs.map((tx, index) => {
+                  const isSkipped = skippedTxIds.has(tx.id);
+                  const txDate = new Date(tx.timestamp).toLocaleDateString(undefined, {
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  });
+
+                  return (
+                    <div
+                      key={tx.id}
+                      className={`p-3 bg-neutral-50 border rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 transition duration-150 ${
+                        isSkipped
+                          ? 'opacity-40 bg-neutral-100 border-neutral-200 line-through'
+                          : 'border-neutral-200/80 hover:border-amber-200'
+                      }`}
+                    >
+                      {/* Left: Metadata */}
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-mono text-[10px] font-black text-neutral-700 bg-neutral-200 px-1.5 py-0.5 rounded-md uppercase">
+                            {tx.type}
+                          </span>
+                          <span className="text-xs font-extrabold text-neutral-800">
+                            {formatNaira(tx.amount)}
+                          </span>
+                          <span className="text-[9.5px] font-mono text-neutral-400 font-bold">
+                            ({tx.provider})
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px] text-neutral-400 font-mono mt-1 flex-wrap">
+                          <span>{txDate}</span>
+                          <span>•</span>
+                          <span>by {tx.employeeName}</span>
+                        </div>
+                        {tx.notes && (
+                          <span className="text-[9px] text-neutral-500 italic block truncate mt-0.5">
+                            📝 {tx.notes}
+                          </span>
+                        )}
+                        {tx.chargesStatus === 'PartiallyPaid' && (
+                          <span className="text-[9px] text-orange-600 font-mono font-bold block mt-1 animate-pulse">
+                            ⏳ Partially Paid: {formatNaira(tx.chargesPaidAmount || 0)} Paid so far ({formatNaira(tx.unpaidFeeAmount ?? 0)} remaining)
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Right: Interactive Controls */}
+                      <div className="flex items-center gap-2 shrink-0 w-full sm:w-auto justify-between sm:justify-end border-t sm:border-t-0 pt-2 sm:pt-0 border-neutral-200/50">
+                        {/* Skip / Include toggle */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSkippedTxIds((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(tx.id)) {
+                                next.delete(tx.id);
+                              } else {
+                                next.add(tx.id);
+                              }
+                              return next;
+                            });
+                          }}
+                          className={`px-2 py-1 text-[10px] font-bold rounded-lg border transition cursor-pointer ${
+                            isSkipped
+                              ? 'bg-amber-100 border-amber-200 text-amber-800'
+                              : 'bg-white hover:bg-neutral-100 border-neutral-200 text-neutral-400'
+                          }`}
+                        >
+                          {isSkipped ? 'Include' : 'Skip'}
+                        </button>
+
+                        {!isSkipped && (
+                          <div className="flex items-center gap-1.5">
+                            {/* Adjusted Fee Input */}
+                            <div className="relative w-20">
+                              <span className="absolute left-1.5 top-1/2 -translate-y-1/2 text-[9.5px] text-neutral-400 font-mono">₦</span>
+                              <input
+                                type="number"
+                                value={tx.unpaidFeeAmount ?? 0}
+                                onChange={(e) => {
+                                  const newVal = parseFloat(e.target.value) || 0;
+                                  setPortfolioTxs((prev) =>
+                                    prev.map((p, idx) => idx === index ? { ...p, unpaidFeeAmount: newVal } : p)
+                                  );
+                                }}
+                                className="w-full bg-white border border-neutral-200 rounded-lg pl-4.5 pr-1 py-1 text-[11.5px] font-mono font-bold text-neutral-850 focus:outline-none focus:border-amber-500"
+                                placeholder="Fee"
+                              />
+                            </div>
+
+                            {/* Method Toggle Selector */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const nextMethod = tx.feeMethod === 'CardDebit' ? 'Cash' : 'CardDebit';
+                                setPortfolioTxs((prev) =>
+                                  prev.map((p, idx) => idx === index ? { ...p, feeMethod: nextMethod } : p)
+                                );
+                              }}
+                              className="p-1 px-1.5 bg-neutral-100 hover:bg-neutral-200 border border-neutral-200 rounded-lg text-[9.5px] font-bold font-mono text-neutral-600 transition uppercase cursor-pointer"
+                              title="Toggle charge collection method between Cash and Card add-on"
+                            >
+                              {tx.feeMethod === 'CardDebit' ? '💳 Card' : '💵 Cash'}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Calculations and Live Summary Impact Card */}
+            {(() => {
+              const activeTxs = portfolioTxs.filter(tx => !skippedTxIds.has(tx.id));
+              const grossFees = activeTxs.reduce((sum, tx) => sum + (tx.unpaidFeeAmount ?? 0), 0);
+              const totalTerminalFees = activeTxs.reduce((sum, tx) => sum + tx.terminalFee, 0);
+              const totalCbnCharges = activeTxs.reduce((sum, tx) => sum + (tx.cbnCharge || 0), 0);
+              const netProfit = grossFees - totalTerminalFees - totalCbnCharges;
+
+              return (
+                <div className="bg-emerald-50/50 border border-emerald-100 p-4 rounded-2xl space-y-2.5">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[9px] text-emerald-800 font-mono font-black uppercase tracking-wider block">
+                      🔴 Cumulative Settle Financial Impact
+                    </span>
+                    <span className="text-[10px] bg-emerald-100 text-emerald-800 font-mono font-black px-2 py-0.5 rounded-full">
+                      {activeTxs.length} of {portfolioTxs.length} Active
+                    </span>
+                  </div>
+                  <div className="space-y-1.5 text-xs text-neutral-600 font-medium">
+                    <div className="flex justify-between">
+                      <span>Gross Customer Fees to Collect:</span>
+                      <span className="font-mono font-bold text-neutral-850">{formatNaira(grossFees)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Total Terminal Base Cost:</span>
+                      <span className="font-mono text-neutral-400">-{formatNaira(totalTerminalFees)}</span>
+                    </div>
+                    {totalCbnCharges > 0 && (
+                      <div className="flex justify-between">
+                        <span>Total CBN Duty Charges:</span>
+                        <span className="font-mono text-neutral-400">-{formatNaira(totalCbnCharges)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between border-t border-neutral-200/50 pt-2 text-sm font-black">
+                      <span className="text-emerald-850">Net Retained Commission Profit:</span>
+                      <span className="font-mono text-emerald-700">
+                        {formatNaira(netProfit)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Confirm Actions */}
+            <div className="grid grid-cols-2 gap-2.5 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingCustomerName(null);
+                  setSkippedTxIds(new Set());
+                }}
+                className="w-full py-2.5 px-4 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 font-bold rounded-xl text-xs transition cursor-pointer font-mono uppercase"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSettlePortfolio}
+                className="w-full py-2.5 px-4 bg-[#00B87A] hover:bg-emerald-600 text-white font-black rounded-xl text-xs transition cursor-pointer flex items-center justify-center gap-1 font-mono uppercase shadow-md active:scale-95"
+              >
+                ✓ Settle Active Charges
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

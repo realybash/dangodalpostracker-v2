@@ -1,0 +1,6 @@
+{
+  "name": "Dan Godal POS Tracker",
+  "description": "POS, Inventory and Sales Management",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,132 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User account",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "ownerId": { "type": "string" }
+      },
+      "required": ["id", "name", "role", "ownerId"]
+    },
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Financial transaction",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "amount": { "type": "number" },
+        "cashierId": { "type": "string" }
+      },
+      "required": ["id", "ownerId", "amount"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Business expense",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "amount": { "type": "number" },
+        "ownerId": { "type": "string" },
+        "employeeId": { "type": "string" }
+      },
+      "required": ["id", "amount", "ownerId"]
+    },
+    "BorrowKeep": {
+      "title": "Borrow/Keep Transaction",
+      "description": "Ledger entry for loans and kept money",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "employeeId": { "type": "string" },
+        "amount": { "type": "number" },
+        "type": { "type": "string" }
+      },
+      "required": ["id", "ownerId", "amount", "type"]
+    },
+    "Referral": {
+      "title": "Referral",
+      "description": "Marketing referral record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "referrerId": { "type": "string" },
+        "referredId": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "referrerId", "referredId", "status"]
+    },
+    "InventoryItem": {
+      "title": "Inventory Item",
+      "description": "Stock product item",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "costPrice": { "type": "number" },
+        "sellingPrice": { "type": "number" },
+        "quantity": { "type": "number" }
+      },
+      "required": ["id", "name", "costPrice", "sellingPrice", "quantity"]
+    },
+    "InventorySale": {
+      "title": "Inventory Sale",
+      "description": "Sales order receipt",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "saleNumber": { "type": "string" },
+        "totalAmount": { "type": "number" },
+        "totalProfit": { "type": "number" }
+      },
+      "required": ["id", "saleNumber", "totalAmount"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "User",
+      "description": "Users collection"
+    },
+    "transactions/{id}": {
+      "schema": "Transaction",
+      "description": "Transactions collection"
+    },
+    "expenses/{id}": {
+      "schema": "Expense",
+      "description": "Expenses collection"
+    },
+    "pos_terminals/{id}": {
+      "schema": "PosTerminal",
+      "description": "POS Terminals"
+    },
+    "borrowKeep/{id}": {
+      "schema": "BorrowKeep",
+      "description": "Debt and loans ledger"
+    },
+    "settings/{ownerId}": {
+      "schema": "Settings",
+      "description": "Manager settings"
+    },
+    "pricing_rules/{id}": {
+      "schema": "PricingRule",
+      "description": "Custom charge rules"
+    },
+    "referrals/{id}": {
+      "schema": "Referral",
+      "description": "Affiliate and referral tracking"
+    },
+    "inventory_items/{id}": {
+      "schema": "InventoryItem",
+      "description": "Products stock catalog"
+    },
+    "inventory_sales/{id}": {
+      "schema": "InventorySale",
+      "description": "Sales history receipts"
+    }
+  }
+}

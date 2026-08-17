@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">DANGODAL POSTRACKER</string>
+    <string name="title_activity_main">DANGODAL POSTRACKER</string>
+    <string name="package_name">com.dangodal.postracker</string>
+    <string name="custom_url_scheme">com.dangodal.postracker</string>
+</resources>

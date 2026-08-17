@@ -37,10 +37,9 @@ interface LoginScreenProps {
   onDeleteAllAccounts?: () => void;
   isUsersLoaded: boolean;
   initialAuthMode?: 'login' | 'register';
-  onOpenLandingPage?: () => void;
 }
 
-export function LoginScreen({ registeredUsers = [], onLogin, onRegister, onDeleteAllAccounts, isUsersLoaded, initialAuthMode, onOpenLandingPage }: LoginScreenProps) {
+export function LoginScreen({ registeredUsers = [], onLogin, onRegister, onDeleteAllAccounts, isUsersLoaded, initialAuthMode }: LoginScreenProps) {
   const [mode, setMode] = useState<'online' | 'offline'>(() => {
     try {
       return (localStorage.getItem('POSTrack_Mode') as 'online' | 'offline') || 'online';
@@ -800,15 +799,6 @@ export function LoginScreen({ registeredUsers = [], onLogin, onRegister, onDelet
         
         {/* Header Banner - OPay Styled Theme */}
         <div className="bg-gradient-to-br from-[#00B87A] via-[#00a36c] to-emerald-900 p-8 sm:p-12 text-center text-white relative">
-          {onOpenLandingPage && (
-            <button 
-              onClick={onOpenLandingPage}
-              className="absolute top-6 left-6 bg-white/20 hover:bg-white/30 text-white px-3 py-1 rounded-full text-[10px] font-mono tracking-wider font-bold flex items-center gap-1 backdrop-blur-md border border-white/25 transition cursor-pointer shadow-xs"
-            >
-              ← Public Landing Page
-            </button>
-          )}
-
           <div className="absolute top-6 right-6 bg-white/15 px-3 py-1 rounded-full text-[10px] font-mono tracking-widest uppercase font-black flex items-center gap-1.5 backdrop-blur-md border border-white/10">
             <span className="w-2 h-2 rounded-full bg-emerald-300 animate-ping" />
             System Live

@@ -79,7 +79,6 @@ import { EmployeeOversightBoard } from './components/EmployeeOversightBoard';
 import { EditEmployeeModal } from './components/EditEmployeeModal';
 import { CashierReconciliationCalculator } from './components/CashierReconciliationCalculator';
 import { LoginScreen } from './components/LoginScreen';
-import { LandingPage } from './components/LandingPage';
 import ReferralsTab from './components/ReferralsTab';
 import { useFirebasePersistence } from './hooks/useFirebasePersistence';
 import { resetAllData } from './lib/resetDatabase';
@@ -886,7 +885,6 @@ const getStoredApprovedTxIds = (): Set<string> => {
   const [isUploadReceiptModalOpen, setIsUploadReceiptModalOpen] = useState(false);
   const [isSubscriptionDetailsOpen, setIsSubscriptionDetailsOpen] = useState(false);
   const [forceRegister, setForceRegister] = useState(false);
-  const [showLandingPage, setShowLandingPage] = useState<boolean>(true);
   const [isSubscriptionExpiredDialogOpen, setIsSubscriptionExpiredDialogOpen] = useState(false);
   const [isRefreshingSubscription, setIsRefreshingSubscription] = useState(false);
   const [billingInitialPlan, setBillingInitialPlan] = useState<'Starter' | 'Professional' | 'Business' | 'Enterprise' | null>(null);
@@ -3801,31 +3799,18 @@ const getStoredApprovedTxIds = (): Set<string> => {
     );
   }
 
-  if (showLandingPage) {
-    return (
-      <LandingPage
-        onGetStarted={() => setShowLandingPage(false)}
-        onOpenDashboard={() => setShowLandingPage(false)}
-        isAuthenticated={!isLocked && !!activeUser && !!activeUser.id}
-        activeUserName={activeUser?.name}
-      />
-    );
-  }
-
   if (isLocked || !activeUser || !activeUser.id || forceRegister) {
     return (
       <LoginScreen
         registeredUsers={registeredUsers}
         onLogin={(user) => {
           setForceRegister(false);
-          setShowLandingPage(false);
           handleLoginSuccess(user);
         }}
         onRegister={handleRegisterUser}
         onDeleteAllAccounts={handleDeleteAllUsers}
         isUsersLoaded={isUsersLoaded}
         initialAuthMode={forceRegister ? 'register' : undefined}
-        onOpenLandingPage={() => setShowLandingPage(true)}
       />
     );
   }

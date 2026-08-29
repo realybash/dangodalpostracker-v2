@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Transaction, TransactionType, ProviderType, User, AppSettings, SubTransfer, PosTerminal } from '../types';
 import { calculateTerminalFee, calculateCBNCharge, generateId, formatNaira, getRecommendedAgentFee, getCalculatedFinancials, getDefaultPricingProfiles } from '../utils';
 import { AudioRecorder } from './AudioRecorder';
+import { SubscriptionWarningBanner } from './SubscriptionWarningBanner';
 import { X, Sparkles, Check, Info, Mic, MicOff, Plus, Trash2, Lock, Unlock, ShieldCheck, AlertTriangle, CreditCard, Smartphone, ArrowRightLeft, Wallet, Landmark, PieChart, Search, Globe, Wifi, Hourglass, BarChart3, User as UserIcon, Cpu, Banknote, Zap, ReceiptText, Scissors } from 'lucide-react';
 
 // @ts-ignore
@@ -170,6 +171,8 @@ interface TransactionFormProps {
   initialTransaction?: Transaction;
   settings?: AppSettings;
   posTerminals?: PosTerminal[];
+  subscriptionDaysRemaining?: number | null;
+  onOpenBillingModal?: () => void;
 }
 
 export function TransactionForm({
@@ -182,7 +185,9 @@ export function TransactionForm({
   initialMode = 'Standard',
   initialTransaction,
   settings,
-  posTerminals
+  posTerminals,
+  subscriptionDaysRemaining,
+  onOpenBillingModal
 }: TransactionFormProps) {
   const [type, setType] = useState<TransactionType>(
     initialTransaction ? initialTransaction.type : (initialType || settings?.defaultType || 'Withdrawal')
@@ -797,6 +802,13 @@ export function TransactionForm({
 
         {/* Modal Main Form Grid */}
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
+          
+          {/* Subscription Expiration Warning Banner */}
+          <SubscriptionWarningBanner
+            daysRemaining={subscriptionDaysRemaining ?? null}
+            currentUser={currentUser}
+            onOpenBillingModal={onOpenBillingModal}
+          />
           
           {/* Active Ticket Basket */}
           {basket.length > 0 && (

@@ -5,7 +5,7 @@
 
 import React, { useReducer, useEffect, useState, useMemo, useRef } from 'react';
 import { Capacitor } from '@capacitor/core';
-import { AppState, AppAction, User, Transaction, UserRole, TransactionType, AppSettings, Expense, PosTerminal, ProviderType, HistoryFilter, InventoryItem, InventorySale, Supplier, SecurityEvent, SecurityEventType } from './types';
+import { AppState, AppAction, User, Transaction, UserRole, TransactionType, AppSettings, Expense, PosTerminal, ProviderType, HistoryFilter, InventoryItem, InventorySale, Supplier, SecurityEvent, SecurityEventType, CapitalAllocation, WeeklyProfit, BranchLoan, BranchCashTransfer } from './types';
 import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, sendPasswordResetEmail, signOut, updatePassword } from 'firebase/auth';
 import { collection, doc, query, where, onSnapshot, setDoc, getDoc, deleteDoc, writeBatch, getDocs, orderBy, limit, or, Timestamp, runTransaction, serverTimestamp, increment } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from './lib/firebase';
@@ -93,6 +93,8 @@ import { QRCodeSVG } from 'qrcode.react';
 import { UploadReceiptModal } from './components/UploadReceiptModal';
 import { SubscriptionDetailsModal } from './components/SubscriptionDetailsModal';
 import { SubscriptionStatusWidget } from './components/SubscriptionStatusWidget';
+import { SubscriptionWarningModal } from './components/SubscriptionWarningModal';
+import { SubscriptionWarningBanner } from './components/SubscriptionWarningBanner';
 import { NetworkAdvisorModal, NetworkAdvisorWidget } from './components/NetworkAdvisor';
 import { 
   User as UserIcon,
@@ -156,12 +158,21 @@ import {
   WifiOff,
   Boxes,
   QrCode,
-  Download
+  Download,
+  Banknote,
+  PieChart,
+  Landmark,
+  Truck
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'motion/react';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { CapitalManager } from './components/CapitalManager';
+import { CapitalAllocationModal } from './components/CapitalAllocationModal';
+import { WeeklyProfitManager } from './components/WeeklyProfitManager';
+import { BranchLoanManager } from './components/BranchLoanManager';
 import { InventoryManager } from './components/InventoryManager';
+import { CashTransferManager } from './components/CashTransferManager';
 
 const LOCAL_STORAGE_KEY = 'POSTrack_State_Store_v5';
 
@@ -337,6 +348,96 @@ function appReducer(state: AppState, action: AppAction): AppState {
           const match = payload.find((u) => u.id === t.id);
           return match ? match : t;
         })
+      };
+      break;
+    }
+    case 'SET_CAPITAL_ALLOCATIONS': {
+      nextState = { ...state, capitalAllocations: action.payload };
+      break;
+    }
+    case 'ADD_CAPITAL_ALLOCATION': {
+      nextState = {
+        ...state,
+        capitalAllocations: [action.payload, ...(state.capitalAllocations || [])]
+      };
+      break;
+    }
+    case 'DELETE_CAPITAL_ALLOCATION': {
+      nextState = {
+        ...state,
+        capitalAllocations: (state.capitalAllocations || []).filter(c => c.id !== action.payload)
+      };
+      break;
+    }
+    case 'SET_WEEKLY_PROFITS': {
+      nextState = { ...state, weeklyProfits: action.payload };
+      break;
+    }
+    case 'ADD_WEEKLY_PROFIT': {
+      nextState = {
+        ...state,
+        weeklyProfits: [action.payload, ...(state.weeklyProfits || [])]
+      };
+      break;
+    }
+    case 'DELETE_WEEKLY_PROFIT': {
+      nextState = {
+        ...state,
+        weeklyProfits: (state.weeklyProfits || []).filter(p => p.id !== action.payload)
+      };
+      break;
+    }
+    case 'SET_BRANCH_LOANS': {
+      nextState = { ...state, branchLoans: action.payload };
+      break;
+    }
+    case 'ADD_BRANCH_LOAN': {
+      nextState = {
+        ...state,
+        branchLoans: [action.payload, ...(state.branchLoans || [])]
+      };
+      break;
+    }
+    case 'UPDATE_BRANCH_LOAN': {
+      nextState = {
+        ...state,
+        branchLoans: (state.branchLoans || []).map(l => 
+          l.id === action.payload.id ? action.payload : l
+        )
+      };
+      break;
+    }
+    case 'DELETE_BRANCH_LOAN': {
+      nextState = {
+        ...state,
+        branchLoans: (state.branchLoans || []).filter(l => l.id !== action.payload)
+      };
+      break;
+    }
+    case 'SET_CASH_TRANSFERS': {
+      nextState = { ...state, cashTransfers: action.payload };
+      break;
+    }
+    case 'ADD_CASH_TRANSFER': {
+      nextState = {
+        ...state,
+        cashTransfers: [action.payload, ...(state.cashTransfers || [])]
+      };
+      break;
+    }
+    case 'UPDATE_CASH_TRANSFER': {
+      nextState = {
+        ...state,
+        cashTransfers: (state.cashTransfers || []).map(t => 
+          t.id === action.payload.id ? action.payload : t
+        )
+      };
+      break;
+    }
+    case 'DELETE_CASH_TRANSFER': {
+      nextState = {
+        ...state,
+        cashTransfers: (state.cashTransfers || []).filter(t => t.id !== action.payload)
       };
       break;
     }
@@ -535,6 +636,7 @@ function initAppState(): AppState {
 export default function App() {
   const [state, dispatch] = useReducer(appReducer, undefined, initAppState);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isCapitalModalOpen, setIsCapitalModalOpen] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstallable, setIsInstallable] = useState(false);
   const [isPwaInstallModalOpen, setIsPwaInstallModalOpen] = useState(false);
@@ -1067,7 +1169,7 @@ const getStoredApprovedTxIds = (): Set<string> => {
   const [newTerminalBattery, setNewTerminalBattery] = useState<number>(100);
   const [newTerminalSignal, setNewTerminalSignal] = useState<number>(5);
   const [newTerminalRate, setNewTerminalRate] = useState<number>(0.5);
-  const [dashboardTab, setDashboardTab] = useState<'pos' | 'expenses' | 'unpaid' | 'terminals' | 'reports' | 'settings' | 'audit' | 'pricing' | 'airtime' | 'referrals' | 'payment-audit' | 'inventory'>('pos');
+  const [dashboardTab, setDashboardTab] = useState<'pos' | 'expenses' | 'unpaid' | 'terminals' | 'reports' | 'settings' | 'audit' | 'pricing' | 'airtime' | 'referrals' | 'payment-audit' | 'inventory' | 'capital' | 'weekly_profit' | 'loans' | 'transfers'>('pos');
 
   // Subscription & Referral Real-time states
   const [activeSubscription, setActiveSubscription] = useState<any>(null);
@@ -1138,26 +1240,35 @@ const getStoredApprovedTxIds = (): Set<string> => {
     return () => clearInterval(interval);
   }, [state.currentUser?.id, state.currentUser?.ownerId, state.currentUser?.role]);
 
+  const subscriptionDaysRemaining = useMemo(() => {
+    if (isSaaSAdmin) return 999;
+    if (!activeSubscription) return null;
+
+    let targetEndMs: number | null = null;
+    if (activeSubscription.status === 'Active' && activeSubscription.subscriptionEndDate) {
+      targetEndMs = new Date(activeSubscription.subscriptionEndDate).getTime();
+    } else if (activeSubscription.status === 'Trial' && activeSubscription.trialEndDate) {
+      targetEndMs = new Date(activeSubscription.trialEndDate).getTime();
+    } else if (activeSubscription.subscriptionEndDate) {
+      targetEndMs = new Date(activeSubscription.subscriptionEndDate).getTime();
+    } else if (activeSubscription.trialEndDate) {
+      targetEndMs = new Date(activeSubscription.trialEndDate).getTime();
+    }
+
+    if (!targetEndMs) return 0;
+
+    const diffMs = targetEndMs - Date.now();
+    return Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+  }, [activeSubscription, isSaaSAdmin]);
+
   const isPremiumLocked = useMemo(() => {
+    if (isSaaSAdmin) return false;
     if (!activeSubscription) return false;
     if (!state.currentUser?.id) return false;
-
-    // The super manager account (including 08141106560 or primary manager) is free & never locked
-    if (state.currentUser?.phone === '08141106560' || (state.currentUser as any)?.phoneNumber === '08141106560' || state.currentUser?.id === '08141106560') {
-      return false;
-    }
 
     // Lock transactions and operations when a subscription is awaiting review
     if (activeSubscription.status === 'Pending Review') {
       return true;
-    }
-
-    const managers = state.availableEmployees.filter(u => u.role === 'Manager');
-    managers.sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
-    const superAdmin = managers.length > 0 ? managers[0] : null;
-    
-    if (superAdmin && superAdmin.id === state.currentUser.id) {
-      return false;
     }
 
     if (activeSubscription.status === 'Active') {
@@ -1169,24 +1280,92 @@ const getStoredApprovedTxIds = (): Set<string> => {
       }
       return false;
     }
+
     if (activeSubscription.status === 'Trial') {
       const trialEnd = new Date(activeSubscription.trialEndDate).getTime();
       const isExpired = trialEnd < Date.now();
       return isExpired;
     }
+
+    if (activeSubscription.status === 'Expired' || activeSubscription.status === 'Rejected') {
+      return true;
+    }
+
     return true;
-  }, [activeSubscription, state.currentUser?.id, state.availableEmployees]);
+  }, [activeSubscription, state.currentUser?.id, isSaaSAdmin]);
+
+  const isSubscriptionExpired = useMemo(() => {
+    if (isSaaSAdmin) return false;
+    if (!activeSubscription) return false;
+    if (activeSubscription.status === 'Pending Review') return true;
+    if (activeSubscription.status === 'Rejected') return true;
+    if (activeSubscription.status === 'Expired') return true;
+
+    if (subscriptionDaysRemaining !== null && subscriptionDaysRemaining <= 0) {
+      return true;
+    }
+    return false;
+  }, [activeSubscription, subscriptionDaysRemaining, isSaaSAdmin]);
+
+  const [isSubscriptionWarningOpen, setIsSubscriptionWarningOpen] = useState(false);
+  const [lastWarningDismissedTime, setLastWarningDismissedTime] = useState<number>(() => {
+    try {
+      const stored = localStorage.getItem('POSTrack_sub_warning_dismissed');
+      return stored ? parseInt(stored, 10) : 0;
+    } catch (e) {
+      return 0;
+    }
+  });
+
+  // Re-check and trigger 30-minute subscription warning modal when within 7 days of expiration
+  useEffect(() => {
+    if (isSaaSAdmin) {
+      setIsSubscriptionWarningOpen(false);
+      return;
+    }
+
+    if (isPremiumLocked || isSubscriptionExpired) {
+      // Expired or locked: close warning modal as full lockout screen takes precedence
+      setIsSubscriptionWarningOpen(false);
+      return;
+    }
+
+    if (subscriptionDaysRemaining !== null && subscriptionDaysRemaining > 0 && subscriptionDaysRemaining <= 7) {
+      const checkTimer = () => {
+        const now = Date.now();
+        const THIRTY_MINUTES = 30 * 60 * 1000;
+        if (!lastWarningDismissedTime || (now - lastWarningDismissedTime >= THIRTY_MINUTES)) {
+          setIsSubscriptionWarningOpen(true);
+        }
+      };
+
+      checkTimer();
+      const interval = setInterval(checkTimer, 30 * 1000); // Check every 30 seconds
+      return () => clearInterval(interval);
+    } else {
+      setIsSubscriptionWarningOpen(false);
+    }
+  }, [subscriptionDaysRemaining, isPremiumLocked, isSubscriptionExpired, lastWarningDismissedTime, isSaaSAdmin]);
+
+  const handleDismissSubscriptionWarning = () => {
+    const now = Date.now();
+    setLastWarningDismissedTime(now);
+    setIsSubscriptionWarningOpen(false);
+    try {
+      localStorage.setItem('POSTrack_sub_warning_dismissed', now.toString());
+    } catch (e) {}
+  };
 
   const isPendingReviewAndLocked = useMemo(() => {
     if (!activeSubscription) return false;
     if (activeSubscription.status !== 'Pending Review') return false;
 
     // SaaS Super Admin (08141106560) is exempt from being blocked
-    if (state.currentUser?.phone === '08141106560' || (state.currentUser as any)?.phoneNumber === '08141106560' || state.currentUser?.id === '08141106560') {
+    if (isSaaSAdmin) {
       return false;
     }
     return true;
-  }, [activeSubscription, state.currentUser]);
+  }, [activeSubscription, isSaaSAdmin]);
 
   const handleUpgradeFromOverlay = (plan: 'Starter' | 'Professional' | 'Business' | 'Enterprise') => {
     setBillingInitialPlan(plan);
@@ -1760,6 +1939,95 @@ const getStoredApprovedTxIds = (): Set<string> => {
       });
     }
 
+    // Subscribe to Capital Allocations (Only for Manager or their Employees)
+    const capitalQuery = isManager
+      ? query(collection(db, 'capital_allocations'), where('managerId', '==', currentUserId))
+      : query(collection(db, 'capital_allocations'), where('cashierId', '==', currentUserId));
+    
+    const unsubscribeCapital = onSnapshot(capitalQuery, (snapshot) => {
+      const capList: CapitalAllocation[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data() as any;
+        if (data.timestamp && typeof data.timestamp === 'object' && data.timestamp.toDate) {
+          data.timestamp = data.timestamp.toDate().toISOString();
+        }
+        capList.push(data as CapitalAllocation);
+      });
+      capList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      
+      dispatch({ type: 'SET_CAPITAL_ALLOCATIONS', payload: capList });
+    }, (err) => {
+      console.warn('[Real-Time] Capital Allocations sync failed:', err);
+    });
+
+    // Subscribe to Weekly Profits (Only for Manager or their Employees)
+    const weeklyProfitQuery = isManager
+      ? query(collection(db, 'weekly_profits'), where('managerId', '==', currentUserId))
+      : query(collection(db, 'weekly_profits'), where('cashierId', '==', currentUserId));
+    
+    const unsubscribeWeeklyProfits = onSnapshot(weeklyProfitQuery, (snapshot) => {
+      const profitList: WeeklyProfit[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data() as any;
+        if (data.timestamp && typeof data.timestamp === 'object' && data.timestamp.toDate) {
+          data.timestamp = data.timestamp.toDate().toISOString();
+        }
+        profitList.push(data as WeeklyProfit);
+      });
+      profitList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      
+      dispatch({ type: 'SET_WEEKLY_PROFITS', payload: profitList });
+    }, (err) => {
+      console.warn('[Real-Time] Weekly Profits sync failed:', err);
+    });
+
+    // Subscribe to Branch Loans (Only for Manager or their Employees)
+    const branchLoansQuery = isManager
+      ? query(collection(db, 'branch_loans'), where('managerId', '==', currentUserId))
+      : query(collection(db, 'branch_loans'), where('giverId', '==', currentUserId));
+    
+    const unsubscribeBranchLoans = onSnapshot(branchLoansQuery, (snapshot) => {
+      const loansList: BranchLoan[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data() as any;
+        if (data.timestamp && typeof data.timestamp === 'object' && data.timestamp.toDate) {
+          data.timestamp = data.timestamp.toDate().toISOString();
+        }
+        loansList.push(data as BranchLoan);
+      });
+      loansList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      
+      dispatch({ type: 'SET_BRANCH_LOANS', payload: loansList });
+    }, (err) => {
+      console.warn('[Real-Time] Branch Loans sync failed:', err);
+    });
+
+    // Subscribe to Cash Transfers
+    const targetManagerId = isManager 
+      ? currentUserId 
+      : (state.currentUser?.parentManagerId || state.currentUser?.ownerId || currentUserId);
+
+    const cashTransfersQuery = query(
+      collection(db, 'cash_transfers'), 
+      where('managerId', '==', targetManagerId)
+    );
+
+    const unsubscribeCashTransfers = onSnapshot(cashTransfersQuery, (snapshot) => {
+      const transferList: BranchCashTransfer[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data() as any;
+        if (data.timestamp && typeof data.timestamp === 'object' && data.timestamp.toDate) {
+          data.timestamp = data.timestamp.toDate().toISOString();
+        }
+        transferList.push(data as BranchCashTransfer);
+      });
+      transferList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      
+      dispatch({ type: 'SET_CASH_TRANSFERS', payload: transferList });
+    }, (err) => {
+      console.warn('[Real-Time] Cash Transfers sync failed:', err);
+    });
+
     // Subscribe to Expenses
     const expensesQuery = isManager 
       ? query(collection(db, 'expenses'), where('ownerId', '==', currentUserId))
@@ -1861,6 +2129,10 @@ const getStoredApprovedTxIds = (): Set<string> => {
     return () => {
       unsubOwner();
       unsubCashier();
+      unsubscribeCapital();
+      unsubscribeWeeklyProfits();
+      unsubscribeBranchLoans();
+      unsubscribeCashTransfers();
       unsubscribeExpenses();
       unsubscribeTerminals();
       unsubscribeInvItems();
@@ -2774,6 +3046,132 @@ const getStoredApprovedTxIds = (): Set<string> => {
         await batch.commit();
       } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, 'transactions_batch_reset');
+      }
+    }
+  };
+
+  const handleAddCapitalAllocation = async (allocation: CapitalAllocation) => {
+    dispatch({ type: 'ADD_CAPITAL_ALLOCATION', payload: allocation });
+    
+    if (isOnline) {
+      try {
+        const cleanData = prepareFirestoreData(allocation, 'capital_allocations');
+        await setDoc(doc(db, 'capital_allocations', allocation.id), cleanData);
+      } catch (error) {
+        console.error('Failed to sync capital allocation:', error);
+      }
+    } else {
+      console.warn('Offline mode: Capital allocation saved locally, but not to Firestore');
+      // Ideally we would add to pending sync queue here
+    }
+  };
+
+  const handleDeleteCapitalAllocation = async (id: string) => {
+    dispatch({ type: 'DELETE_CAPITAL_ALLOCATION', payload: id });
+    
+    if (isOnline) {
+      try {
+        await deleteDoc(doc(db, 'capital_allocations', id));
+      } catch (error) {
+        console.error('Failed to delete capital allocation:', error);
+      }
+    }
+  };
+
+  const handleAddWeeklyProfit = async (profit: WeeklyProfit) => {
+    dispatch({ type: 'ADD_WEEKLY_PROFIT', payload: profit });
+    
+    if (isOnline) {
+      try {
+        const cleanData = prepareFirestoreData(profit, 'weekly_profits');
+        await setDoc(doc(db, 'weekly_profits', profit.id), cleanData);
+      } catch (error) {
+        console.error('Failed to sync weekly profit:', error);
+      }
+    }
+  };
+
+  const handleDeleteWeeklyProfit = async (id: string) => {
+    dispatch({ type: 'DELETE_WEEKLY_PROFIT', payload: id });
+    
+    if (isOnline) {
+      try {
+        await deleteDoc(doc(db, 'weekly_profits', id));
+      } catch (error) {
+        console.error('Failed to delete weekly profit:', error);
+      }
+    }
+  };
+
+  const handleAddBranchLoan = async (loan: BranchLoan) => {
+    dispatch({ type: 'ADD_BRANCH_LOAN', payload: loan });
+    
+    if (isOnline) {
+      try {
+        const cleanData = prepareFirestoreData(loan, 'branch_loans');
+        await setDoc(doc(db, 'branch_loans', loan.id), cleanData);
+      } catch (error) {
+        console.error('Failed to sync branch loan:', error);
+      }
+    }
+  };
+
+  const handleUpdateBranchLoan = async (loan: BranchLoan) => {
+    dispatch({ type: 'UPDATE_BRANCH_LOAN', payload: loan });
+    
+    if (isOnline) {
+      try {
+        const cleanData = prepareFirestoreData(loan, 'branch_loans');
+        await setDoc(doc(db, 'branch_loans', loan.id), cleanData);
+      } catch (error) {
+        console.error('Failed to update branch loan:', error);
+      }
+    }
+  };
+
+  const handleDeleteBranchLoan = async (id: string) => {
+    dispatch({ type: 'DELETE_BRANCH_LOAN', payload: id });
+    
+    if (isOnline) {
+      try {
+        await deleteDoc(doc(db, 'branch_loans', id));
+      } catch (error) {
+        console.error('Failed to delete branch loan:', error);
+      }
+    }
+  };
+
+  const handleAddCashTransfer = async (transfer: BranchCashTransfer) => {
+    dispatch({ type: 'ADD_CASH_TRANSFER', payload: transfer });
+    if (isOnline) {
+      try {
+        const cleanData = prepareFirestoreData(transfer, 'cash_transfers');
+        await setDoc(doc(db, 'cash_transfers', transfer.id), cleanData);
+      } catch (error) {
+        console.error('Failed to sync cash transfer:', error);
+      }
+    }
+  };
+
+  const handleUpdateCashTransfer = async (transfer: BranchCashTransfer) => {
+    dispatch({ type: 'UPDATE_CASH_TRANSFER', payload: transfer });
+    if (isOnline) {
+      try {
+        const cleanData = prepareFirestoreData(transfer, 'cash_transfers');
+        await setDoc(doc(db, 'cash_transfers', transfer.id), cleanData);
+      } catch (error) {
+        console.error('Failed to update cash transfer:', error);
+      }
+    }
+  };
+
+  const handleDeleteCashTransfer = async (id: string) => {
+    dispatch({ type: 'DELETE_CASH_TRANSFER', payload: id });
+    if (isOnline) {
+      try {
+        await deleteDoc(doc(db, 'cash_transfers', id));
+      } catch (error) {
+        console.error('Failed to delete cash transfer:', error);
       }
     }
   };
@@ -5354,28 +5752,41 @@ const getStoredApprovedTxIds = (): Set<string> => {
           </div>
 
           {/* Core Green Card Quick Cash Actions (Triggers Forms immediately) */}
-          <div className="grid grid-cols-3 gap-3 bg-white/10 p-2.5 rounded-2xl backdrop-blur-md">
+          <div className={`grid ${activeUser.role === 'Manager' ? 'grid-cols-4' : 'grid-cols-3'} gap-3 bg-white/10 p-2.5 rounded-2xl backdrop-blur-md`}>
             <button
               onClick={() => openWithPreset('Deposit')}
               className="bg-white hover:bg-neutral-50 text-[#00b87a] font-bold py-2.5 px-1 rounded-xl text-[12px] flex flex-col sm:flex-row items-center justify-center gap-1.5 transition active:scale-95 shadow-sm cursor-pointer"
             >
               <ArrowUpFromLine className="w-4 h-4 text-[#00b87a]" />
-              <span>Money Receive</span>
+              <span className="hidden sm:inline">Money Receive</span>
+              <span className="sm:hidden">Receive</span>
             </button>
             <button
               onClick={() => openWithPreset('Transfer')}
               className="bg-white hover:bg-neutral-50 text-[#00b87a] font-bold py-2.5 px-1 rounded-xl text-[12px] flex flex-col sm:flex-row items-center justify-center gap-1.5 transition active:scale-95 shadow-sm cursor-pointer"
             >
               <ArrowRightLeft className="w-4 h-4 text-[#00b87a]" />
-              <span>Bank Transfer</span>
+              <span className="hidden sm:inline">Bank Transfer</span>
+              <span className="sm:hidden">Transfer</span>
             </button>
             <button
               onClick={() => openWithPreset('Withdrawal')}
               className="bg-white hover:bg-neutral-50 text-[#00b87a] font-bold py-2.5 px-1 rounded-xl text-[12px] flex flex-col sm:flex-row items-center justify-center gap-1.5 transition active:scale-95 shadow-sm cursor-pointer"
             >
               <ArrowDownToLine className="w-4 h-4 text-[#00b87a]" />
-              <span>Withdraw</span>
+              <span className="hidden sm:inline">Withdraw</span>
+              <span className="sm:hidden">Withdraw</span>
             </button>
+            {activeUser.role === 'Manager' && (
+              <button
+                onClick={() => setIsCapitalModalOpen(true)}
+                className="bg-emerald-900 hover:bg-emerald-800 text-emerald-50 font-bold py-2.5 px-1 rounded-xl text-[12px] flex flex-col sm:flex-row items-center justify-center gap-1.5 transition active:scale-95 shadow-sm cursor-pointer border border-emerald-500"
+              >
+                <Banknote className="w-4 h-4 text-emerald-300" />
+                <span className="hidden sm:inline">Give Capital</span>
+                <span className="sm:hidden">Capital</span>
+              </button>
+            )}
           </div>
 
         </div>
@@ -5458,6 +5869,19 @@ const getStoredApprovedTxIds = (): Set<string> => {
             <span className="text-[10px] font-black tracking-tight leading-none">Debts</span>
           </button>
 
+          <button
+            type="button"
+            onClick={() => setDashboardTab('transfers')}
+            className={`py-2.5 px-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border text-center active:scale-95 duration-100 relative ${
+              dashboardTab === 'transfers'
+                ? 'bg-blue-600 text-white border-blue-600 shadow-md font-black'
+                : 'bg-transparent border-transparent text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800'
+            }`}
+          >
+            <ArrowRightLeft className="w-5 h-5 shrink-0" />
+            <span className="text-[10px] font-black tracking-tight leading-none">Transfers</span>
+          </button>
+
           {(activeUser.role === 'Manager' || (filteredPosTerminals && filteredPosTerminals.length > 0)) && (
             <button
               type="button"
@@ -5470,6 +5894,51 @@ const getStoredApprovedTxIds = (): Set<string> => {
             >
               <CreditCard className="w-5 h-5 shrink-0" />
               <span className="text-[10px] font-black tracking-tight leading-none">POS Terminals</span>
+            </button>
+          )}
+
+          {activeUser.role === 'Manager' && (
+            <button
+              type="button"
+              onClick={() => setDashboardTab('capital')}
+              className={`py-2.5 px-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border text-center active:scale-95 duration-100 ${
+                dashboardTab === 'capital'
+                  ? 'bg-emerald-500 text-white border-emerald-500 shadow-md font-black'
+                  : 'bg-transparent border-transparent text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800'
+              }`}
+            >
+              <Banknote className="w-5 h-5 shrink-0" />
+              <span className="text-[10px] font-black tracking-tight leading-none">Capital</span>
+            </button>
+          )}
+
+          {activeUser.role === 'Manager' && (
+            <button
+              type="button"
+              onClick={() => setDashboardTab('weekly_profit')}
+              className={`py-2.5 px-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border text-center active:scale-95 duration-100 ${
+                dashboardTab === 'weekly_profit'
+                  ? 'bg-indigo-500 text-white border-indigo-500 shadow-md font-black'
+                  : 'bg-transparent border-transparent text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800'
+              }`}
+            >
+              <PieChart className="w-5 h-5 shrink-0" />
+              <span className="text-[10px] font-black tracking-tight leading-none">Profits</span>
+            </button>
+          )}
+
+          {activeUser.role === 'Manager' && (
+            <button
+              type="button"
+              onClick={() => setDashboardTab('loans')}
+              className={`py-2.5 px-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border text-center active:scale-95 duration-100 ${
+                dashboardTab === 'loans'
+                  ? 'bg-amber-600 text-white border-amber-600 shadow-md font-black'
+                  : 'bg-transparent border-transparent text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800'
+              }`}
+            >
+              <Landmark className="w-5 h-5 shrink-0" />
+              <span className="text-[10px] font-black tracking-tight leading-none">Loans</span>
             </button>
           )}
 
@@ -5600,6 +6069,18 @@ const getStoredApprovedTxIds = (): Set<string> => {
                 <ArrowRightLeft className="w-5 h-5 stroke-[2.2]" />
               </div>
               <span className="text-[11px] font-bold text-neutral-700 leading-tight">Bank Transfer</span>
+            </button>
+
+            {/* Branch Cash Transfer */}
+            <button 
+              onClick={() => setDashboardTab('transfers')}
+              className="group flex flex-col items-center gap-1.5 cursor-pointer focus:outline-none"
+              title="Track cash given to person taking to another branch"
+            >
+              <div className="w-12 h-12 rounded-full bg-blue-100 group-hover:bg-blue-200 transition-colors flex items-center justify-center text-blue-600 shadow-sm active:scale-90 duration-100">
+                <Truck className="w-5 h-5 stroke-[2.2]" />
+              </div>
+              <span className="text-[11px] font-bold text-neutral-700 leading-tight">Branch Cash</span>
             </button>
 
             {/* Airtime Sale */}
@@ -6731,6 +7212,58 @@ const getStoredApprovedTxIds = (): Set<string> => {
           </ErrorBoundary>
         )}
 
+        {dashboardTab === 'capital' && state.currentUser.role === 'Manager' && (
+          <ErrorBoundary sectionTitle="Capital Manager">
+            <CapitalManager
+              currentUser={state.currentUser}
+              teamUsers={teamUsers}
+              capitalAllocations={state.capitalAllocations || []}
+              onAddAllocation={handleAddCapitalAllocation}
+              onDeleteAllocation={handleDeleteCapitalAllocation}
+            />
+          </ErrorBoundary>
+        )}
+
+        {dashboardTab === 'weekly_profit' && state.currentUser.role === 'Manager' && (
+          <ErrorBoundary sectionTitle="Weekly Profit">
+            <WeeklyProfitManager
+              currentUser={state.currentUser}
+              teamUsers={teamUsers}
+              weeklyProfits={state.weeklyProfits || []}
+              onAddProfit={handleAddWeeklyProfit}
+              onDeleteProfit={handleDeleteWeeklyProfit}
+            />
+          </ErrorBoundary>
+        )}
+
+        {dashboardTab === 'loans' && state.currentUser.role === 'Manager' && (
+          <ErrorBoundary sectionTitle="Branch Loans">
+            <BranchLoanManager
+              currentUser={state.currentUser}
+              teamUsers={teamUsers}
+              branchLoans={state.branchLoans || []}
+              onAddLoan={handleAddBranchLoan}
+              onUpdateLoan={handleUpdateBranchLoan}
+              onDeleteLoan={handleDeleteBranchLoan}
+            />
+          </ErrorBoundary>
+        )}
+
+        {dashboardTab === 'transfers' && (
+          <ErrorBoundary sectionTitle="Inter-Branch Cash Transfers">
+            <CashTransferManager
+              currentUser={state.currentUser}
+              teamUsers={teamUsers}
+              cashTransfers={state.cashTransfers || []}
+              onAddTransfer={handleAddCashTransfer}
+              onUpdateTransfer={handleUpdateCashTransfer}
+              onDeleteTransfer={handleDeleteCashTransfer}
+              subscriptionDaysRemaining={subscriptionDaysRemaining}
+              onOpenBillingModal={() => setIsBillingModalOpen(true)}
+            />
+          </ErrorBoundary>
+        )}
+
         {dashboardTab === 'reports' && (state.currentUser.role === 'Manager' || state.impersonatedUserId) && (
           <ErrorBoundary sectionTitle="Reports & Cashier Oversight">
             <EmployeeOversightBoard
@@ -7101,6 +7634,16 @@ const getStoredApprovedTxIds = (): Set<string> => {
         </div>
       </footer>
 
+      {isCapitalModalOpen && state.currentUser.role === 'Manager' && (
+        <CapitalAllocationModal
+          isOpen={isCapitalModalOpen}
+          onClose={() => setIsCapitalModalOpen(false)}
+          currentUser={state.currentUser}
+          teamUsers={teamUsers}
+          onSave={handleAddCapitalAllocation}
+        />
+      )}
+
       {/* 16. DETAILED TRANSACTION DIALOG FORM modal */}
       {isAddModalOpen && (
         <TransactionForm
@@ -7120,6 +7663,8 @@ const getStoredApprovedTxIds = (): Set<string> => {
           onClose={() => setIsAddModalOpen(false)}
           settings={state.settings}
           posTerminals={filteredPosTerminals}
+          subscriptionDaysRemaining={subscriptionDaysRemaining}
+          onOpenBillingModal={() => setIsBillingModalOpen(true)}
         />
       )}
 
@@ -7140,6 +7685,8 @@ const getStoredApprovedTxIds = (): Set<string> => {
           onClose={() => setEditingTransaction(null)}
           settings={state.settings}
           posTerminals={filteredPosTerminals}
+          subscriptionDaysRemaining={subscriptionDaysRemaining}
+          onOpenBillingModal={() => setIsBillingModalOpen(true)}
         />
       )}
 
@@ -7182,99 +7729,125 @@ const getStoredApprovedTxIds = (): Set<string> => {
         onSuccess={handleRefreshSubscription}
       />
 
-      {/* 14. SUBSCRIPTION EXPIRED DIALOG */}
+      {/* 14. MANDATORY SUBSCRIPTION EXPIRED / LOCKED OVERLAY */}
       <AnimatePresence>
-        {isSubscriptionExpiredDialogOpen && (
-          <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+        {(isPremiumLocked || isSubscriptionExpired) && (
+          <div className="fixed inset-0 bg-neutral-950/85 backdrop-blur-md flex items-center justify-center p-4 z-[200] pointer-events-auto">
             <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white border border-neutral-200 rounded-3xl max-w-md w-full shadow-2xl p-6 relative overflow-hidden text-center"
+              initial={{ opacity: 0, scale: 0.92, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.92, y: 10 }}
+              className="bg-white border-2 border-red-500 rounded-3xl max-w-lg w-full shadow-2xl p-6 sm:p-8 relative overflow-hidden text-center space-y-6"
             >
-              {/* Close Button */}
-              <button 
-                onClick={() => setIsSubscriptionExpiredDialogOpen(false)}
-                className="absolute top-4 right-4 text-neutral-400 hover:text-neutral-600 transition-colors cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
+              {/* Mandatory Lock Icon */}
+              <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto text-red-600 border-2 border-red-200 shadow-md">
+                <ShieldAlert className="w-10 h-10 animate-pulse" />
+              </div>
 
-              <div className="space-y-4">
-                {/* Visual Icon */}
-                <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto text-red-600 border border-red-100 shadow-sm">
-                  <ShieldAlert className="w-8 h-8" />
+              <div className="space-y-3">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-black uppercase font-mono bg-red-100 text-red-700 border border-red-300">
+                  <span className="w-2 h-2 rounded-full bg-red-600 animate-ping" />
+                  <span>Subscription Expired • Account Locked</span>
                 </div>
 
-                <div className="space-y-2">
-                  <h3 className="text-xl font-extrabold text-neutral-900 tracking-tight">Subscription Expired</h3>
-                  <div className="text-sm text-neutral-600 space-y-3 leading-relaxed">
-                    <p className="font-semibold text-red-600 bg-red-50 py-1.5 px-3 rounded-full inline-block">
-                      Your 14-day free trial or paid subscription has expired.
-                    </p>
-                    <p className="font-medium text-neutral-700">
-                      To continue creating transactions and managing your business, please renew your subscription.
-                    </p>
-                    <p className="text-xs bg-neutral-50 p-3 rounded-2xl border border-neutral-200/80 text-neutral-600 font-medium">
-                      Your data is safe. Your transaction history, reports, Realized Gain, managers, and cashiers remain available in read-only mode.
-                    </p>
-                  </div>
+                <h3 className="text-2xl font-black text-neutral-900 tracking-tight">
+                  {state.currentUser?.role === 'Manager' ? 'Store Operations Locked' : 'Cashier Terminal Suspended'}
+                </h3>
+
+                <div className="text-xs text-neutral-600 space-y-3 leading-relaxed">
+                  {state.currentUser?.role === 'Manager' ? (
+                    <>
+                      <p className="font-bold text-red-600 bg-red-50 py-2 px-4 rounded-xl border border-red-200">
+                        Your subscription payment plan has expired. All manager and cashier operations are strictly suspended.
+                      </p>
+                      <p className="font-medium text-neutral-700">
+                        To immediately restore full POS transaction logging, cash transfers, and cashier terminal access for <span className="font-bold text-neutral-900">{state.settings?.businessName || 'your store'}</span>, please renew your subscription plan now.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="font-bold text-red-600 bg-red-50 py-2 px-4 rounded-xl border border-red-200">
+                        Your Store Manager's subscription payment plan has expired.
+                      </p>
+                      <p className="font-medium text-neutral-700">
+                        Cashier terminal actions are locked until your Store Manager pays and renews the subscription plan. Please inform your manager.
+                      </p>
+                    </>
+                  )}
+
+                  <p className="text-[11px] bg-neutral-50 p-3 rounded-2xl border border-neutral-200 text-neutral-500 font-mono">
+                    🛡️ All customer transactions, reports, and store data remain 100% safe & retained.
+                  </p>
                 </div>
+              </div>
 
-                {/* Buttons Stack */}
-                <div className="space-y-2.5 pt-4">
-                  <button
-                    onClick={() => {
-                      setIsSubscriptionExpiredDialogOpen(false);
-                      setBillingInitialPlan(null);
-                      setIsBillingModalOpen(true);
-                    }}
-                    className="w-full bg-[#00B87A] hover:bg-[#009E66] text-white py-3 rounded-2xl font-bold text-sm shadow-md transition-all transform hover:-translate-y-0.5 active:translate-y-0 cursor-pointer flex items-center justify-center gap-2"
-                  >
-                    <Sparkles className="w-4 h-4" />
-                    <span>View Subscription Plans</span>
-                  </button>
+              {/* Action Buttons */}
+              <div className="space-y-2.5 pt-2">
+                {state.currentUser?.role === 'Manager' && (
+                  <>
+                    <button
+                      onClick={() => {
+                        setBillingInitialPlan(null);
+                        setIsBillingModalOpen(true);
+                      }}
+                      className="w-full bg-[#00B87A] hover:bg-[#009E66] text-white py-3.5 rounded-2xl font-black text-xs uppercase font-mono shadow-lg transition-all transform hover:-translate-y-0.5 active:translate-y-0 cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      <span>Pay & Renew Subscription Plan</span>
+                    </button>
 
-                  <button
-                    onClick={() => {
-                      setIsSubscriptionExpiredDialogOpen(false);
-                      setIsUploadReceiptModalOpen(true);
-                    }}
-                    className="w-full bg-white border border-neutral-200 hover:border-neutral-300 text-neutral-700 py-2.5 rounded-2xl font-bold text-sm shadow-xs transition-colors cursor-pointer flex items-center justify-center gap-2"
-                  >
-                    <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
-                    <span>Upload Payment Receipt</span>
-                  </button>
+                    <button
+                      onClick={() => setIsUploadReceiptModalOpen(true)}
+                      className="w-full bg-white border border-neutral-300 hover:border-neutral-400 text-neutral-800 py-3 rounded-2xl font-bold text-xs uppercase font-mono shadow-xs transition-colors cursor-pointer flex items-center justify-center gap-2"
+                    >
+                      <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+                      <span>Upload Payment Receipt</span>
+                    </button>
+                  </>
+                )}
 
-                  <button
-                    onClick={() => {
-                      const whatsappUrl = `https://wa.me/2348000000000?text=${encodeURIComponent(`Hello POSTRACK Support, I need assistance renewing my subscription for business ${state.settings?.businessName || ''} (${activeUser?.name || ''}).`)}`;
-                      window.open(whatsappUrl, '_blank');
-                    }}
-                    className="w-full bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200/80 py-2.5 rounded-2xl font-bold text-sm transition-colors cursor-pointer flex items-center justify-center gap-2"
-                  >
-                    <Headphones className="w-4 h-4 text-emerald-600" />
-                    <span>Contact Support</span>
-                  </button>
+                <WhatsAppSupportButton
+                  variant="full"
+                  userName={activeUser?.name}
+                  businessName={state.settings?.businessName}
+                  phone={activeUser?.phone}
+                  role={activeUser?.role}
+                  buttonText="Contact Support on WhatsApp"
+                />
 
-                  <button
-                    onClick={handleRefreshSubscription}
-                    disabled={isRefreshingSubscription}
-                    className="w-full bg-neutral-100 hover:bg-neutral-200 text-neutral-700 py-2.5 rounded-2xl font-bold text-sm transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50"
-                  >
-                    {isRefreshingSubscription ? (
-                      <div className="w-4 h-4 border-2 border-neutral-500 border-t-transparent rounded-full animate-spin" />
-                    ) : (
-                      <RotateCcw className="w-4 h-4 text-neutral-500" />
-                    )}
-                    <span>Refresh Subscription Status</span>
-                  </button>
-                </div>
+                <button
+                  onClick={handleRefreshSubscription}
+                  disabled={isRefreshingSubscription}
+                  className="w-full bg-neutral-100 hover:bg-neutral-200 text-neutral-800 py-3 rounded-2xl font-black text-xs uppercase font-mono transition-colors cursor-pointer flex items-center justify-center gap-2 disabled:opacity-50 border border-neutral-200"
+                >
+                  {isRefreshingSubscription ? (
+                    <div className="w-4 h-4 border-2 border-neutral-600 border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <RotateCcw className="w-4 h-4 text-neutral-600" />
+                  )}
+                  <span>Refresh Subscription Status</span>
+                </button>
               </div>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
+
+      {/* 15. RECURRING 30-MINUTE EXPIRATION WARNING MODAL */}
+      <SubscriptionWarningModal
+        isOpen={isSubscriptionWarningOpen}
+        onClose={handleDismissSubscriptionWarning}
+        daysRemaining={subscriptionDaysRemaining ?? 0}
+        expiryDate={activeSubscription?.subscriptionEndDate || activeSubscription?.trialEndDate || null}
+        planName={activeSubscription?.plan || 'Free Trial'}
+        currentUser={state.currentUser}
+        businessName={state.settings?.businessName}
+        onOpenBillingModal={() => {
+          setBillingInitialPlan(null);
+          setIsBillingModalOpen(true);
+        }}
+        onOpenUploadReceiptModal={() => setIsUploadReceiptModalOpen(true)}
+      />
 
       {isProfileModalOpen && (
         <ProfileModal

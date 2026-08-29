@@ -181,7 +181,7 @@ export function UploadReceiptModal({
 
   return (
     <AnimatePresence>
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto">
+      <div className="fixed inset-0 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 z-[250] overflow-y-auto">
         <motion.div
           initial={{ opacity: 0, scale: 0.95, y: 15 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}

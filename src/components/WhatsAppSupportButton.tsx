@@ -10,7 +10,7 @@ export interface WhatsAppSupportProps {
   issue?: string;
   context?: string;
   buttonText?: string;
-  variant?: 'primary' | 'outline' | 'card' | 'compact' | 'floating';
+  variant?: 'primary' | 'outline' | 'card' | 'compact' | 'floating' | 'full';
   className?: string;
 }
 

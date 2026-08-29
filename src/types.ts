@@ -415,6 +415,77 @@ export interface SecurityEvent {
   metadata?: any;
 }
 
+export interface CapitalAllocation {
+  id: string;
+  cashierId: string;
+  cashierName: string;
+  areaOfWorking: string;
+  amount: number;
+  managerId: string;
+  timestamp: string;
+  notes?: string;
+}
+
+export interface WeeklyProfit {
+  id: string;
+  cashierId: string;
+  cashierName: string;
+  areaOfWorking: string;
+  amount: number;
+  managerId: string;
+  timestamp: string;
+  notes?: string;
+}
+
+export interface BranchLoan {
+  id: string;
+  giverId: string;
+  giverName: string;
+  giverArea: string;
+  receiverName: string;
+  receiverArea: string;
+  amount: number;
+  managerId: string;
+  timestamp: string;
+  notes?: string;
+  isPaid?: boolean;
+  paidAt?: string;
+}
+
+export interface CashReceiveLog {
+  id: string;
+  receivedAmount: number;
+  receivedByName: string;
+  receivedByUserId: string;
+  bearerName?: string;
+  timestamp: string;
+  notes?: string;
+}
+
+export interface BranchCashTransfer {
+  id: string;
+  senderUserId: string;
+  senderName: string;
+  senderBranch: string;
+  receiverUserId?: string;
+  receiverName: string;
+  receiverBranch?: string;
+  bearerName: string; // The person/courier carrying the physical cash to another branch
+  amount: number; // Total expected transfer amount
+  receivedAmount?: number; // Total cash confirmed received so far
+  status: 'Pending' | 'Partially Received' | 'Confirmed' | 'Rejected';
+  managerId: string;
+  timestamp: string;
+  confirmedByUserId?: string;
+  confirmedByName?: string;
+  confirmedAt?: string;
+  witnessedByManagerId?: string;
+  witnessedByManagerName?: string;
+  witnessedAt?: string;
+  notes?: string;
+  receiveLogs?: CashReceiveLog[];
+}
+
 export interface AppState {
   currentUser: User;
   availableEmployees: User[];
@@ -426,6 +497,10 @@ export interface AppState {
   inventorySales?: InventorySale[];
   suppliers?: Supplier[];
   securityEvents?: SecurityEvent[];
+  capitalAllocations?: CapitalAllocation[];
+  weeklyProfits?: WeeklyProfit[];
+  branchLoans?: BranchLoan[];
+  cashTransfers?: BranchCashTransfer[];
   selectedEmployeeFilter: string; // 'ALL' or employeeId
   impersonatedUserId?: string; // ID of employee being viewed by manager
   activeTimeframe: 'Daily' | 'Weekly' | 'Monthly' | 'Yearly';
@@ -467,6 +542,20 @@ export type AppAction =
   | { type: 'DELETE_SUPPLIER'; payload: string }
   | { type: 'SET_SECURITY_EVENTS'; payload: SecurityEvent[] }
   | { type: 'ADD_SECURITY_EVENT'; payload: SecurityEvent }
+  | { type: 'SET_CAPITAL_ALLOCATIONS'; payload: CapitalAllocation[] }
+  | { type: 'ADD_CAPITAL_ALLOCATION'; payload: CapitalAllocation }
+  | { type: 'DELETE_CAPITAL_ALLOCATION'; payload: string }
+  | { type: 'SET_WEEKLY_PROFITS'; payload: WeeklyProfit[] }
+  | { type: 'ADD_WEEKLY_PROFIT'; payload: WeeklyProfit }
+  | { type: 'DELETE_WEEKLY_PROFIT'; payload: string }
+  | { type: 'SET_BRANCH_LOANS'; payload: BranchLoan[] }
+  | { type: 'ADD_BRANCH_LOAN'; payload: BranchLoan }
+  | { type: 'UPDATE_BRANCH_LOAN'; payload: BranchLoan }
+  | { type: 'DELETE_BRANCH_LOAN'; payload: string }
+  | { type: 'SET_CASH_TRANSFERS'; payload: BranchCashTransfer[] }
+  | { type: 'ADD_CASH_TRANSFER'; payload: BranchCashTransfer }
+  | { type: 'UPDATE_CASH_TRANSFER'; payload: BranchCashTransfer }
+  | { type: 'DELETE_CASH_TRANSFER'; payload: string }
   | { type: 'SET_IMPERSONATED_USER'; payload: string | undefined }
   | { type: 'BULK_DELETE_TRANSACTIONS'; payload: string[] }
   | { type: 'BULK_UPDATE_TRANSACTIONS'; payload: Transaction[] }

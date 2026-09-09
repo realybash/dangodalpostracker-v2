@@ -5,7 +5,7 @@
 
 import React, { useReducer, useEffect, useState, useMemo, useRef } from 'react';
 import { Capacitor } from '@capacitor/core';
-import { AppState, AppAction, User, Transaction, UserRole, TransactionType, AppSettings, Expense, PosTerminal, ProviderType, HistoryFilter, InventoryItem, InventorySale, Supplier, SecurityEvent, SecurityEventType, CapitalAllocation, WeeklyProfit, BranchLoan, BranchCashTransfer } from './types';
+import { AppState, AppAction, User, Transaction, UserRole, TransactionType, AppSettings, Expense, PosTerminal, ProviderType, HistoryFilter, InventoryItem, InventorySale, Supplier, SecurityEvent, SecurityEventType, CapitalAllocation, WeeklyProfit, BranchLoan, BranchCashTransfer, ManagerSavings } from './types';
 import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, sendPasswordResetEmail, signOut, updatePassword } from 'firebase/auth';
 import { collection, doc, query, where, onSnapshot, setDoc, getDoc, deleteDoc, writeBatch, getDocs, orderBy, limit, or, Timestamp, runTransaction, serverTimestamp, increment } from 'firebase/firestore';
 import { db, auth, handleFirestoreError, OperationType } from './lib/firebase';
@@ -162,7 +162,8 @@ import {
   Banknote,
   PieChart,
   Landmark,
-  Truck
+  Truck,
+  PiggyBank
 } from 'lucide-react';
 
 import { motion, AnimatePresence } from 'motion/react';
@@ -173,6 +174,7 @@ import { WeeklyProfitManager } from './components/WeeklyProfitManager';
 import { BranchLoanManager } from './components/BranchLoanManager';
 import { InventoryManager } from './components/InventoryManager';
 import { CashTransferManager } from './components/CashTransferManager';
+import { SavingsManager } from './components/SavingsManager';
 
 const LOCAL_STORAGE_KEY = 'POSTrack_State_Store_v5';
 
@@ -222,6 +224,11 @@ const DEFAULT_STATE: AppState = {
   inventorySales: [],
   suppliers: [],
   securityEvents: [],
+  capitalAllocations: [],
+  weeklyProfits: [],
+  branchLoans: [],
+  cashTransfers: [],
+  managerSavings: [],
   settings: DEFAULT_SETTINGS,
   historyFilter: { type: 'DAY_1' }
 };
@@ -362,6 +369,13 @@ function appReducer(state: AppState, action: AppAction): AppState {
       };
       break;
     }
+    case 'UPDATE_CAPITAL_ALLOCATION': {
+      nextState = {
+        ...state,
+        capitalAllocations: (state.capitalAllocations || []).map(c => c.id === action.payload.id ? action.payload : c)
+      };
+      break;
+    }
     case 'DELETE_CAPITAL_ALLOCATION': {
       nextState = {
         ...state,
@@ -377,6 +391,13 @@ function appReducer(state: AppState, action: AppAction): AppState {
       nextState = {
         ...state,
         weeklyProfits: [action.payload, ...(state.weeklyProfits || [])]
+      };
+      break;
+    }
+    case 'UPDATE_WEEKLY_PROFIT': {
+      nextState = {
+        ...state,
+        weeklyProfits: (state.weeklyProfits || []).map(p => p.id === action.payload.id ? action.payload : p)
       };
       break;
     }
@@ -438,6 +459,33 @@ function appReducer(state: AppState, action: AppAction): AppState {
       nextState = {
         ...state,
         cashTransfers: (state.cashTransfers || []).filter(t => t.id !== action.payload)
+      };
+      break;
+    }
+    case 'SET_MANAGER_SAVINGS': {
+      nextState = { ...state, managerSavings: action.payload };
+      break;
+    }
+    case 'ADD_MANAGER_SAVINGS': {
+      nextState = {
+        ...state,
+        managerSavings: [action.payload, ...(state.managerSavings || [])]
+      };
+      break;
+    }
+    case 'UPDATE_MANAGER_SAVINGS': {
+      nextState = {
+        ...state,
+        managerSavings: (state.managerSavings || []).map(s => 
+          s.id === action.payload.id ? action.payload : s
+        )
+      };
+      break;
+    }
+    case 'DELETE_MANAGER_SAVINGS': {
+      nextState = {
+        ...state,
+        managerSavings: (state.managerSavings || []).filter(s => s.id !== action.payload)
       };
       break;
     }
@@ -1169,7 +1217,7 @@ const getStoredApprovedTxIds = (): Set<string> => {
   const [newTerminalBattery, setNewTerminalBattery] = useState<number>(100);
   const [newTerminalSignal, setNewTerminalSignal] = useState<number>(5);
   const [newTerminalRate, setNewTerminalRate] = useState<number>(0.5);
-  const [dashboardTab, setDashboardTab] = useState<'pos' | 'expenses' | 'unpaid' | 'terminals' | 'reports' | 'settings' | 'audit' | 'pricing' | 'airtime' | 'referrals' | 'payment-audit' | 'inventory' | 'capital' | 'weekly_profit' | 'loans' | 'transfers'>('pos');
+  const [dashboardTab, setDashboardTab] = useState<'pos' | 'expenses' | 'unpaid' | 'terminals' | 'reports' | 'settings' | 'audit' | 'pricing' | 'airtime' | 'referrals' | 'payment-audit' | 'inventory' | 'capital' | 'weekly_profit' | 'loans' | 'transfers' | 'savings'>('pos');
 
   // Subscription & Referral Real-time states
   const [activeSubscription, setActiveSubscription] = useState<any>(null);
@@ -2028,6 +2076,28 @@ const getStoredApprovedTxIds = (): Set<string> => {
       console.warn('[Real-Time] Cash Transfers sync failed:', err);
     });
 
+    // Subscribe to Manager Savings
+    const managerSavingsQuery = query(
+      collection(db, 'manager_savings'),
+      where('managerId', '==', targetManagerId)
+    );
+
+    const unsubscribeManagerSavings = onSnapshot(managerSavingsQuery, (snapshot) => {
+      const savingsList: ManagerSavings[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data() as any;
+        if (data.timestamp && typeof data.timestamp === 'object' && data.timestamp.toDate) {
+          data.timestamp = data.timestamp.toDate().toISOString();
+        }
+        savingsList.push(data as ManagerSavings);
+      });
+      savingsList.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      
+      dispatch({ type: 'SET_MANAGER_SAVINGS', payload: savingsList });
+    }, (err) => {
+      console.warn('[Real-Time] Manager Savings sync failed:', err);
+    });
+
     // Subscribe to Expenses
     const expensesQuery = isManager 
       ? query(collection(db, 'expenses'), where('ownerId', '==', currentUserId))
@@ -2133,6 +2203,7 @@ const getStoredApprovedTxIds = (): Set<string> => {
       unsubscribeWeeklyProfits();
       unsubscribeBranchLoans();
       unsubscribeCashTransfers();
+      unsubscribeManagerSavings();
       unsubscribeExpenses();
       unsubscribeTerminals();
       unsubscribeInvItems();
@@ -3066,6 +3137,19 @@ const getStoredApprovedTxIds = (): Set<string> => {
     }
   };
 
+  const handleUpdateCapitalAllocation = async (allocation: CapitalAllocation) => {
+    dispatch({ type: 'UPDATE_CAPITAL_ALLOCATION', payload: allocation });
+    
+    if (isOnline) {
+      try {
+        const cleanData = prepareFirestoreData(allocation, 'capital_allocations');
+        await setDoc(doc(db, 'capital_allocations', allocation.id), cleanData, { merge: true });
+      } catch (error) {
+        console.error('Failed to sync updated capital allocation:', error);
+      }
+    }
+  };
+
   const handleDeleteCapitalAllocation = async (id: string) => {
     dispatch({ type: 'DELETE_CAPITAL_ALLOCATION', payload: id });
     
@@ -3087,6 +3171,19 @@ const getStoredApprovedTxIds = (): Set<string> => {
         await setDoc(doc(db, 'weekly_profits', profit.id), cleanData);
       } catch (error) {
         console.error('Failed to sync weekly profit:', error);
+      }
+    }
+  };
+
+  const handleUpdateWeeklyProfit = async (profit: WeeklyProfit) => {
+    dispatch({ type: 'UPDATE_WEEKLY_PROFIT', payload: profit });
+    
+    if (isOnline) {
+      try {
+        const cleanData = prepareFirestoreData(profit, 'weekly_profits');
+        await setDoc(doc(db, 'weekly_profits', profit.id), cleanData, { merge: true });
+      } catch (error) {
+        console.error('Failed to sync updated weekly profit:', error);
       }
     }
   };
@@ -3172,6 +3269,41 @@ const getStoredApprovedTxIds = (): Set<string> => {
         await deleteDoc(doc(db, 'cash_transfers', id));
       } catch (error) {
         console.error('Failed to delete cash transfer:', error);
+      }
+    }
+  };
+
+  const handleAddManagerSavings = async (savings: ManagerSavings) => {
+    dispatch({ type: 'ADD_MANAGER_SAVINGS', payload: savings });
+    if (isOnline) {
+      try {
+        const cleanData = prepareFirestoreData(savings, 'manager_savings');
+        await setDoc(doc(db, 'manager_savings', savings.id), cleanData);
+      } catch (error) {
+        console.error('Failed to sync manager savings:', error);
+      }
+    }
+  };
+
+  const handleUpdateManagerSavings = async (savings: ManagerSavings) => {
+    dispatch({ type: 'UPDATE_MANAGER_SAVINGS', payload: savings });
+    if (isOnline) {
+      try {
+        const cleanData = prepareFirestoreData(savings, 'manager_savings');
+        await setDoc(doc(db, 'manager_savings', savings.id), cleanData);
+      } catch (error) {
+        console.error('Failed to update manager savings:', error);
+      }
+    }
+  };
+
+  const handleDeleteManagerSavings = async (id: string) => {
+    dispatch({ type: 'DELETE_MANAGER_SAVINGS', payload: id });
+    if (isOnline) {
+      try {
+        await deleteDoc(doc(db, 'manager_savings', id));
+      } catch (error) {
+        console.error('Failed to delete manager savings:', error);
       }
     }
   };
@@ -5945,6 +6077,21 @@ const getStoredApprovedTxIds = (): Set<string> => {
           {activeUser.role === 'Manager' && (
             <button
               type="button"
+              onClick={() => setDashboardTab('savings')}
+              className={`py-2.5 px-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border text-center active:scale-95 duration-100 ${
+                dashboardTab === 'savings'
+                  ? 'bg-teal-600 text-white border-teal-600 shadow-md font-black'
+                  : 'bg-transparent border-transparent text-neutral-500 hover:bg-neutral-50 hover:text-neutral-800'
+              }`}
+            >
+              <PiggyBank className="w-5 h-5 shrink-0" />
+              <span className="text-[10px] font-black tracking-tight leading-none">Savings</span>
+            </button>
+          )}
+
+          {activeUser.role === 'Manager' && (
+            <button
+              type="button"
               onClick={() => setDashboardTab('reports')}
               className={`py-2.5 px-1 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all cursor-pointer border text-center active:scale-95 duration-100 ${
                 dashboardTab === 'reports'
@@ -7219,6 +7366,7 @@ const getStoredApprovedTxIds = (): Set<string> => {
               teamUsers={teamUsers}
               capitalAllocations={state.capitalAllocations || []}
               onAddAllocation={handleAddCapitalAllocation}
+              onUpdateAllocation={handleUpdateCapitalAllocation}
               onDeleteAllocation={handleDeleteCapitalAllocation}
             />
           </ErrorBoundary>
@@ -7231,6 +7379,7 @@ const getStoredApprovedTxIds = (): Set<string> => {
               teamUsers={teamUsers}
               weeklyProfits={state.weeklyProfits || []}
               onAddProfit={handleAddWeeklyProfit}
+              onUpdateProfit={handleUpdateWeeklyProfit}
               onDeleteProfit={handleDeleteWeeklyProfit}
             />
           </ErrorBoundary>
@@ -7245,6 +7394,18 @@ const getStoredApprovedTxIds = (): Set<string> => {
               onAddLoan={handleAddBranchLoan}
               onUpdateLoan={handleUpdateBranchLoan}
               onDeleteLoan={handleDeleteBranchLoan}
+            />
+          </ErrorBoundary>
+        )}
+
+        {dashboardTab === 'savings' && state.currentUser.role === 'Manager' && (
+          <ErrorBoundary sectionTitle="Manager Savings">
+            <SavingsManager
+              currentUser={state.currentUser}
+              managerSavings={state.managerSavings || []}
+              onAddSavings={handleAddManagerSavings}
+              onUpdateSavings={handleUpdateManagerSavings}
+              onDeleteSavings={handleDeleteManagerSavings}
             />
           </ErrorBoundary>
         )}

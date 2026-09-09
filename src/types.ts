@@ -421,6 +421,7 @@ export interface CapitalAllocation {
   cashierName: string;
   areaOfWorking: string;
   amount: number;
+  type?: 'Increase' | 'Decrease';
   managerId: string;
   timestamp: string;
   notes?: string;
@@ -486,6 +487,16 @@ export interface BranchCashTransfer {
   receiveLogs?: CashReceiveLog[];
 }
 
+export interface ManagerSavings {
+  id: string;
+  fullName: string;
+  area: string;
+  amount: number;
+  managerId: string;
+  timestamp: string;
+  updatedAt?: string;
+}
+
 export interface AppState {
   currentUser: User;
   availableEmployees: User[];
@@ -501,6 +512,7 @@ export interface AppState {
   weeklyProfits?: WeeklyProfit[];
   branchLoans?: BranchLoan[];
   cashTransfers?: BranchCashTransfer[];
+  managerSavings?: ManagerSavings[];
   selectedEmployeeFilter: string; // 'ALL' or employeeId
   impersonatedUserId?: string; // ID of employee being viewed by manager
   activeTimeframe: 'Daily' | 'Weekly' | 'Monthly' | 'Yearly';
@@ -544,9 +556,11 @@ export type AppAction =
   | { type: 'ADD_SECURITY_EVENT'; payload: SecurityEvent }
   | { type: 'SET_CAPITAL_ALLOCATIONS'; payload: CapitalAllocation[] }
   | { type: 'ADD_CAPITAL_ALLOCATION'; payload: CapitalAllocation }
+  | { type: 'UPDATE_CAPITAL_ALLOCATION'; payload: CapitalAllocation }
   | { type: 'DELETE_CAPITAL_ALLOCATION'; payload: string }
   | { type: 'SET_WEEKLY_PROFITS'; payload: WeeklyProfit[] }
   | { type: 'ADD_WEEKLY_PROFIT'; payload: WeeklyProfit }
+  | { type: 'UPDATE_WEEKLY_PROFIT'; payload: WeeklyProfit }
   | { type: 'DELETE_WEEKLY_PROFIT'; payload: string }
   | { type: 'SET_BRANCH_LOANS'; payload: BranchLoan[] }
   | { type: 'ADD_BRANCH_LOAN'; payload: BranchLoan }
@@ -556,6 +570,10 @@ export type AppAction =
   | { type: 'ADD_CASH_TRANSFER'; payload: BranchCashTransfer }
   | { type: 'UPDATE_CASH_TRANSFER'; payload: BranchCashTransfer }
   | { type: 'DELETE_CASH_TRANSFER'; payload: string }
+  | { type: 'SET_MANAGER_SAVINGS'; payload: ManagerSavings[] }
+  | { type: 'ADD_MANAGER_SAVINGS'; payload: ManagerSavings }
+  | { type: 'UPDATE_MANAGER_SAVINGS'; payload: ManagerSavings }
+  | { type: 'DELETE_MANAGER_SAVINGS'; payload: string }
   | { type: 'SET_IMPERSONATED_USER'; payload: string | undefined }
   | { type: 'BULK_DELETE_TRANSACTIONS'; payload: string[] }
   | { type: 'BULK_UPDATE_TRANSACTIONS'; payload: Transaction[] }

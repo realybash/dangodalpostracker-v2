@@ -30,7 +30,8 @@ import {
   AlertTriangle,
   History,
   Download,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Edit3
 } from 'lucide-react';
 import { formatNaira, generateId } from '../utils';
 import { SubscriptionWarningBanner } from './SubscriptionWarningBanner';
@@ -77,6 +78,7 @@ export function CashTransferManager({
   onOpenBillingModal
 }: CashTransferManagerProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingTransfer, setEditingTransfer] = useState<BranchCashTransfer | null>(null);
   const [receiveModalTransfer, setReceiveModalTransfer] = useState<BranchCashTransfer | null>(null);
   const [filterTab, setFilterTab] = useState<'all' | 'pending' | 'partial' | 'confirmed' | 'sent' | 'unwitnessed' | 'history'>('all');
   const [eventTypeFilter, setEventTypeFilter] = useState<string>('ALL');
@@ -435,67 +437,74 @@ export function CashTransferManager({
     setExpandedLogs(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const handleReceiverSelect = (id: string) => {
-    setReceiverCashierId(id);
-    if (id) {
-      const selected = availableCashiers.find(c => c.id === id);
-      if (selected) {
-        setCustomReceiverName(selected.name || selected.fullName || '');
-        setTargetBranch(selected.areaOfWorking || '');
-      }
-    } else {
-      setCustomReceiverName('');
-      setTargetBranch('');
-    }
+  const handleStartEdit = (transfer: BranchCashTransfer) => {
+    setEditingTransfer(transfer);
+    setCustomReceiverName(transfer.receiverName);
+    setTargetBranch(transfer.receiverBranch || '');
+    setAmount(transfer.amount.toString());
+    setBearerName(transfer.bearerName || transfer.receiverName || '');
+    setNotes(transfer.notes || '');
+    setIsModalOpen(true);
   };
 
-  const handleCreateTransfer = (e: React.FormEvent) => {
-    e.preventDefault();
-    const parsedAmount = parseFloat(amount);
-    if (!parsedAmount || parsedAmount <= 0) return;
-    if (!bearerName.trim()) return;
-
-    let finalReceiverName = customReceiverName.trim();
-    if (receiverCashierId && !finalReceiverName) {
-      const selected = availableCashiers.find(c => c.id === receiverCashierId);
-      finalReceiverName = selected ? (selected.name || selected.fullName || '') : '';
-    }
-
-    if (!finalReceiverName) return;
-
-    const isManagerActor = currentUser.role === 'Manager';
-
-    const newTransfer: BranchCashTransfer = {
-      id: generateId(),
-      senderUserId: currentUser.id,
-      senderName: currentUser.name || currentUser.fullName || 'Cashier',
-      senderBranch: currentUser.areaOfWorking || currentUser.businessName || 'Main Branch',
-      receiverUserId: receiverCashierId || undefined,
-      receiverName: finalReceiverName,
-      receiverBranch: targetBranch.trim() || 'Branch',
-      bearerName: bearerName.trim(),
-      amount: parsedAmount,
-      receivedAmount: 0,
-      status: 'Pending',
-      managerId: currentUser.role === 'Manager' ? currentUser.id : (currentUser.parentManagerId || currentUser.ownerId || currentUser.id),
-      timestamp: new Date().toISOString(),
-      notes: notes.trim() || undefined,
-      witnessedByManagerId: isManagerActor ? currentUser.id : undefined,
-      witnessedByManagerName: isManagerActor ? (currentUser.name || currentUser.fullName) : undefined,
-      witnessedAt: isManagerActor ? new Date().toISOString() : undefined,
-      receiveLogs: []
-    };
-
-    onAddTransfer(newTransfer);
-
-    // Reset Form
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    setEditingTransfer(null);
     setReceiverCashierId('');
     setCustomReceiverName('');
     setTargetBranch('');
     setBearerName('');
     setAmount('');
     setNotes('');
-    setIsModalOpen(false);
+  };
+
+  const handleCreateTransfer = (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsedAmount = parseFloat(amount);
+    if (!parsedAmount || parsedAmount <= 0) return;
+
+    const finalReceiverName = customReceiverName.trim();
+    if (!finalReceiverName) return;
+
+    const isManagerActor = currentUser.role === 'Manager';
+    const finalBearer = bearerName.trim() || finalReceiverName;
+
+    if (editingTransfer) {
+      const updatedTransfer: BranchCashTransfer = {
+        ...editingTransfer,
+        receiverName: finalReceiverName,
+        receiverBranch: targetBranch.trim() || 'Branch',
+        bearerName: finalBearer,
+        amount: parsedAmount,
+        notes: notes.trim() || undefined,
+      };
+      onUpdateTransfer(updatedTransfer);
+    } else {
+      const newTransfer: BranchCashTransfer = {
+        id: generateId(),
+        senderUserId: currentUser.id,
+        senderName: currentUser.name || currentUser.fullName || 'Cashier',
+        senderBranch: currentUser.areaOfWorking || currentUser.businessName || 'Main Branch',
+        receiverUserId: receiverCashierId || undefined,
+        receiverName: finalReceiverName,
+        receiverBranch: targetBranch.trim() || 'Branch',
+        bearerName: finalBearer,
+        amount: parsedAmount,
+        receivedAmount: 0,
+        status: 'Pending',
+        managerId: currentUser.role === 'Manager' ? currentUser.id : (currentUser.parentManagerId || currentUser.ownerId || currentUser.id),
+        timestamp: new Date().toISOString(),
+        notes: notes.trim() || undefined,
+        witnessedByManagerId: isManagerActor ? currentUser.id : undefined,
+        witnessedByManagerName: isManagerActor ? (currentUser.name || currentUser.fullName) : undefined,
+        witnessedAt: isManagerActor ? new Date().toISOString() : undefined,
+        receiveLogs: []
+      };
+
+      onAddTransfer(newTransfer);
+    }
+
+    handleCloseModal();
   };
 
   const openReceiveModal = (transfer: BranchCashTransfer) => {
@@ -1359,13 +1368,22 @@ export function CashTransferManager({
                     )}
 
                     {(currentUser.role === 'Manager' || isSender) && (
-                      <button
-                        onClick={() => onDeleteTransfer(transfer.id)}
-                        className="p-1.5 text-neutral-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors ml-auto"
-                        title="Delete record"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      <div className="flex items-center gap-1 ml-auto">
+                        <button
+                          onClick={() => handleStartEdit(transfer)}
+                          className="p-1.5 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                          title="Edit transfer record"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => onDeleteTransfer(transfer.id)}
+                          className="p-1.5 text-neutral-400 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-colors"
+                          title="Delete record"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1375,7 +1393,7 @@ export function CashTransferManager({
         </div>
       ))}
 
-      {/* NEW CASH TRANSFER MODAL */}
+      {/* NEW / EDIT CASH TRANSFER MODAL */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-neutral-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 md:p-8 shadow-2xl border border-neutral-100 my-8 animate-in fade-in zoom-in-95 duration-200">
@@ -1386,13 +1404,15 @@ export function CashTransferManager({
                 </div>
                 <div>
                   <h3 className="text-lg font-extrabold text-neutral-800">
-                    Transfer Cash to Cashier
+                    {editingTransfer ? 'Edit Branch Cash Transfer' : 'Transfer Cash Branch'}
                   </h3>
-                  <p className="text-xs text-neutral-500">Record cash given from Cashier to Cashier (Manager Monitored)</p>
+                  <p className="text-xs text-neutral-500">
+                    {editingTransfer ? 'Update existing transfer details' : 'Enter cash transfer details manually'}
+                  </p>
                 </div>
               </div>
               <button
-                onClick={() => setIsModalOpen(false)}
+                onClick={handleCloseModal}
                 className="p-2 text-neutral-400 hover:text-neutral-600 rounded-full hover:bg-neutral-100 transition-colors"
               >
                 <X className="w-5 h-5" />
@@ -1400,53 +1420,28 @@ export function CashTransferManager({
             </div>
 
             <form onSubmit={handleCreateTransfer} className="space-y-4">
-              {/* Sending Cashier Info Readonly */}
-              <div className="bg-indigo-50/80 rounded-2xl p-3 border border-indigo-100 text-xs flex justify-between items-center">
-                <span className="text-indigo-800 font-extrabold flex items-center gap-1.5">
-                  <UserCheck className="w-3.5 h-3.5 text-indigo-600" />
-                  Sending Cashier (You):
-                </span>
-                <span className="font-extrabold text-indigo-950">
-                  {currentUser.name || currentUser.fullName} ({currentUser.areaOfWorking || 'Branch'})
-                </span>
-              </div>
-
-              {/* Receiving Cashier Dropdown or Custom Name */}
+              {/* Full Name (Manual Entry) */}
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-neutral-800 flex items-center justify-between">
-                  <span>Receiving Cashier *</span>
-                  <span className="text-[10px] text-neutral-400 font-normal">Select or type cashier name</span>
+                  <span>Full Name *</span>
+                  <span className="text-[10px] text-neutral-400 font-normal">Manual Entry</span>
                 </label>
-                {availableCashiers.length > 0 && (
-                  <select
-                    value={receiverCashierId}
-                    onChange={(e) => handleReceiverSelect(e.target.value)}
-                    className="w-full bg-neutral-50 border border-neutral-200 rounded-xl px-3.5 py-2.5 text-xs font-medium outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all mb-2"
-                  >
-                    <option value="">-- Select Destination Cashier --</option>
-                    {availableCashiers.map(c => (
-                      <option key={c.id} value={c.id}>
-                        {c.name || c.fullName} ({c.areaOfWorking || 'Branch'})
-                      </option>
-                    ))}
-                  </select>
-                )}
-                <input
-                  type="text"
-                  placeholder="Or enter Receiving Cashier Name (e.g. AMINU - MARABA)"
-                  value={customReceiverName}
-                  onChange={(e) => {
-                    setCustomReceiverName(e.target.value);
-                    setReceiverCashierId('');
-                  }}
-                  className="w-full bg-neutral-50 border border-neutral-200 rounded-xl px-3.5 py-2.5 text-xs font-medium outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
-                  required
-                />
+                <div className="relative">
+                  <UserIcon className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="Enter Cashier Full Name"
+                    value={customReceiverName}
+                    onChange={(e) => setCustomReceiverName(e.target.value)}
+                    className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-9 pr-3.5 py-2.5 text-xs font-semibold text-neutral-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
+                    required
+                  />
+                </div>
               </div>
 
-              {/* Destination Branch / Location */}
+              {/* Area */}
               <div className="space-y-1.5">
-                <label className="text-xs font-bold text-neutral-700">Destination Branch / Area</label>
+                <label className="text-xs font-bold text-neutral-700">Area</label>
                 <div className="relative">
                   <MapPin className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
@@ -1454,39 +1449,21 @@ export function CashTransferManager({
                     placeholder="e.g. MARABA Branch"
                     value={targetBranch}
                     onChange={(e) => setTargetBranch(e.target.value)}
-                    className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-9 pr-3.5 py-2.5 text-xs font-medium outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
+                    className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-9 pr-3.5 py-2.5 text-xs font-medium text-neutral-800 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
                   />
                 </div>
               </div>
 
-              {/* Person Taking Money (Bearer) */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-amber-800 flex items-center gap-1">
-                  <Truck className="w-3.5 h-3.5 text-amber-600" />
-                  Person Carrying / Transporting Money (Bearer) *
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. MIKA'ILU (Driver)"
-                  value={bearerName}
-                  onChange={(e) => setBearerName(e.target.value)}
-                  className="w-full bg-amber-50/60 border border-amber-200 rounded-xl px-3.5 py-2.5 text-xs font-bold text-amber-950 outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200 transition-all"
-                  required
-                />
-                <p className="text-[10px] text-amber-700 italic">
-                  Write the name of the courier carrying physical cash between cashiers.
-                </p>
-              </div>
-
               {/* Amount */}
               <div className="space-y-1.5">
-                <label className="text-xs font-bold text-neutral-700">Total Cash Amount Sent (₦) *</label>
+                <label className="text-xs font-bold text-neutral-700">Amount (₦) *</label>
                 <div className="relative">
                   <Coins className="w-4 h-4 text-indigo-500 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="number"
                     step="any"
-                    placeholder="e.g. 1000000"
+                    min="0"
+                    placeholder="0.00"
                     value={amount}
                     onChange={(e) => setAmount(e.target.value)}
                     className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-9 pr-3.5 py-2.5 text-sm font-black font-mono text-indigo-700 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
@@ -1495,75 +1472,22 @@ export function CashTransferManager({
                 </div>
               </div>
 
-              {/* Active Ledger Alert for Receiver */}
-              {activeLedgerForNewForm && (
-                <div className="bg-amber-50 border border-amber-300 rounded-2xl p-3.5 text-xs text-amber-900 space-y-2 animate-in fade-in">
-                  <div className="flex items-center gap-2 font-extrabold text-amber-950">
-                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                    <span>Active Running Ledger Notice for {activeLedgerForNewForm.receiverName}</span>
-                  </div>
-                  <p className="text-[11px] text-amber-800 leading-relaxed">
-                    {activeLedgerForNewForm.receiverName} ({activeLedgerForNewForm.receiverBranch}) currently has <strong>{activeLedgerForNewForm.activeTransfers.length} active unfinished handoff(s)</strong> with an outstanding balance of <strong>{formatNaira(activeLedgerForNewForm.netBalanceOwed)}</strong>.
-                  </p>
-                  <div className="bg-white/90 rounded-xl p-2.5 border border-amber-200 text-[11px] font-mono space-y-1">
-                    <div className="flex justify-between text-amber-900">
-                      <span>Current Outstanding Balance:</span>
-                      <strong className="text-amber-950">{formatNaira(activeLedgerForNewForm.netBalanceOwed)}</strong>
-                    </div>
-                    <div className="flex justify-between text-indigo-700">
-                      <span>New Additional Handoff Amount:</span>
-                      <strong className="text-indigo-900">+{formatNaira(parseFloat(amount) || 0)}</strong>
-                    </div>
-                    <div className="flex justify-between text-emerald-800 font-bold border-t border-amber-200/80 pt-1">
-                      <span>New Consolidated Pair Balance:</span>
-                      <strong className="text-emerald-950 font-black text-xs">
-                        {formatNaira(activeLedgerForNewForm.netBalanceOwed + (parseFloat(amount) || 0))}
-                      </strong>
-                    </div>
-                  </div>
-                  <div className="text-[10px] text-amber-700 italic">
-                    This new transfer will be logged as Handoff #{activeLedgerForNewForm.activeTransfers.length + 1}. Previous handoff calculations remain intact without confusion.
-                  </div>
-                </div>
-              )}
-
-              {/* Date & Time Timestamp Warning */}
-              <div className="bg-slate-900 text-slate-300 p-3 rounded-2xl text-[11px] font-mono flex items-center justify-between">
-                <span className="flex items-center gap-1.5 font-bold text-amber-300">
-                  <Clock className="w-3.5 h-3.5" />
-                  Timestamp logged:
-                </span>
-                <span>{formatFullDateAndTime(new Date().toISOString())}</span>
-              </div>
-
-              {/* Notes */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-neutral-700">Notes / Reason (Optional)</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Cash balancing from Kabusa to Maraba"
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  className="w-full bg-neutral-50 border border-neutral-200 rounded-xl px-3.5 py-2.5 text-xs font-medium outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all"
-                />
-              </div>
-
               {/* Action Submit */}
               <div className="pt-4 flex items-center gap-3">
                 <button
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
+                  onClick={handleCloseModal}
                   className="flex-1 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 py-3 rounded-2xl font-bold text-xs transition-all"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={!amount || !bearerName.trim() || (!customReceiverName.trim() && !receiverCashierId)}
+                  disabled={!amount || isNaN(parseFloat(amount)) || parseFloat(amount) <= 0 || !customReceiverName.trim()}
                   className="flex-1 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white py-3 rounded-2xl font-extrabold text-xs shadow-md transition-all active:scale-95 flex items-center justify-center gap-2"
                 >
                   <Send className="w-4 h-4" />
-                  <span>Send & Record Handoff</span>
+                  <span>{editingTransfer ? 'Update Transfer' : 'Save Transfer'}</span>
                 </button>
               </div>
             </form>

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { User, CapitalAllocation } from '../types';
-import { X, MapPin, Banknote, Save } from 'lucide-react';
+import { X, MapPin, Banknote, Save, User as UserIcon, TrendingUp, TrendingDown } from 'lucide-react';
 import { generateId } from '../utils';
 
 interface CapitalAllocationModalProps {
@@ -12,47 +12,39 @@ interface CapitalAllocationModalProps {
 }
 
 export function CapitalAllocationModal({ isOpen, onClose, currentUser, teamUsers, onSave }: CapitalAllocationModalProps) {
-  const [selectedCashier, setSelectedCashier] = useState('');
+  const [allocationType, setAllocationType] = useState<'Increase' | 'Decrease'>('Increase');
+  const [cashierNameInput, setCashierNameInput] = useState('');
   const [amount, setAmount] = useState('');
-  const [notes, setNotes] = useState('');
   const [area, setArea] = useState('');
 
   if (!isOpen) return null;
 
   const cashiers = teamUsers.filter(u => u.role === 'Employee');
 
-  const handleCashierSelect = (id: string) => {
-    setSelectedCashier(id);
-    const cashier = cashiers.find(c => c.id === id);
-    if (cashier) {
-      setArea(cashier.areaOfWorking || '');
-    } else {
-      setArea('');
-    }
-  };
-
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedCashier || !amount || isNaN(Number(amount))) return;
-    const cashier = cashiers.find(c => c.id === selectedCashier);
-    if (!cashier) return;
+    const trimmedName = cashierNameInput.trim();
+    const parsedAmount = Number(amount);
+    if (!trimmedName || !amount || isNaN(parsedAmount) || parsedAmount <= 0) return;
+
+    const matchedCashier = cashiers.find(c => c.name.toLowerCase() === trimmedName.toLowerCase());
 
     const allocation: CapitalAllocation = {
       id: generateId(),
-      cashierId: cashier.id,
-      cashierName: cashier.name,
-      areaOfWorking: area || cashier.areaOfWorking || 'Unspecified',
-      amount: Number(amount),
+      cashierId: matchedCashier ? matchedCashier.id : generateId(),
+      cashierName: trimmedName,
+      areaOfWorking: area.trim() || 'Unspecified',
+      amount: parsedAmount,
+      type: allocationType,
       managerId: currentUser.id,
-      timestamp: new Date().toISOString(),
-      notes
+      timestamp: new Date().toISOString()
     };
 
     onSave(allocation);
-    setSelectedCashier('');
+    setCashierNameInput('');
     setAmount('');
-    setNotes('');
     setArea('');
+    setAllocationType('Increase');
     onClose();
   };
 
@@ -72,8 +64,8 @@ export function CapitalAllocationModal({ isOpen, onClose, currentUser, teamUsers
               <Banknote className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-black text-neutral-800">Record Capital</h2>
-              <p className="text-xs text-neutral-500 font-medium">Allocate working capital to a cashier</p>
+              <h2 className="text-lg font-black text-neutral-800">Adjust Cashier Capital</h2>
+              <p className="text-xs text-neutral-500 font-medium">Increase or decrease cashier working capital</p>
             </div>
           </div>
           <button 
@@ -85,19 +77,50 @@ export function CapitalAllocationModal({ isOpen, onClose, currentUser, teamUsers
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-5">
+          {/* Action Type Selector */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-bold text-neutral-600 uppercase tracking-wider">Action Type</label>
+            <div className="flex items-center gap-2 bg-neutral-100 p-1 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setAllocationType('Increase')}
+                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  allocationType === 'Increase'
+                    ? 'bg-emerald-600 text-white shadow-sm'
+                    : 'text-neutral-600 hover:text-neutral-900'
+                }`}
+              >
+                <TrendingUp className="w-4 h-4" />
+                Increase Capital (+)
+              </button>
+              <button
+                type="button"
+                onClick={() => setAllocationType('Decrease')}
+                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                  allocationType === 'Decrease'
+                    ? 'bg-rose-600 text-white shadow-sm'
+                    : 'text-neutral-600 hover:text-neutral-900'
+                }`}
+              >
+                <TrendingDown className="w-4 h-4" />
+                Decrease Capital (-)
+              </button>
+            </div>
+          </div>
+
           <div className="space-y-1.5">
             <label className="text-xs font-bold text-neutral-600 uppercase tracking-wider">Full Name</label>
-            <select
-              required
-              value={selectedCashier}
-              onChange={(e) => handleCashierSelect(e.target.value)}
-              className="w-full bg-neutral-50 border border-neutral-200 rounded-xl px-4 py-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all font-medium text-neutral-800"
-            >
-              <option value="">-- Select Cashier --</option>
-              {cashiers.map(c => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </select>
+            <div className="relative">
+              <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-neutral-400" />
+              <input
+                required
+                type="text"
+                value={cashierNameInput}
+                onChange={(e) => setCashierNameInput(e.target.value)}
+                placeholder="Type Cashier Full Name"
+                className="w-full bg-neutral-50 border border-neutral-200 rounded-xl pl-11 pr-4 py-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all font-medium text-neutral-800"
+              />
+            </div>
           </div>
 
           <div className="space-y-1.5">
@@ -125,29 +148,26 @@ export function CapitalAllocationModal({ isOpen, onClose, currentUser, teamUsers
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
               placeholder="0.00"
-              className="w-full bg-neutral-50 border border-neutral-200 rounded-xl px-4 py-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all font-bold text-xl text-emerald-600"
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-bold text-neutral-600 uppercase tracking-wider">Notes (Optional)</label>
-            <input
-              type="text"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              placeholder="Morning shift float..."
-              className="w-full bg-neutral-50 border border-neutral-200 rounded-xl px-4 py-3 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 transition-all font-medium text-neutral-800"
+              className={`w-full bg-neutral-50 border border-neutral-200 rounded-xl px-4 py-3 outline-none focus:ring-2 transition-all font-bold text-xl ${
+                allocationType === 'Decrease'
+                  ? 'focus:border-rose-500 focus:ring-rose-200 text-rose-600'
+                  : 'focus:border-emerald-500 focus:ring-emerald-200 text-emerald-600'
+              }`}
             />
           </div>
 
           <div className="pt-2">
             <button
               type="submit"
-              disabled={!selectedCashier || !amount || isNaN(Number(amount))}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3.5 rounded-xl font-bold shadow-md shadow-emerald-200 hover:shadow-lg transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={!cashierNameInput.trim() || !amount || isNaN(Number(amount)) || Number(amount) <= 0}
+              className={`w-full py-3.5 rounded-xl font-bold text-white shadow-md hover:shadow-lg transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${
+                allocationType === 'Decrease'
+                  ? 'bg-rose-600 hover:bg-rose-700 shadow-rose-200'
+                  : 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200'
+              }`}
             >
               <Save className="w-5 h-5" />
-              <span>Save Allocation</span>
+              <span>{allocationType === 'Decrease' ? 'Save Reduction (-)' : 'Save Increase (+)'}</span>
             </button>
           </div>
         </form>
